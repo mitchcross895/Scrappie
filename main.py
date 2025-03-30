@@ -1,6 +1,6 @@
 import discord
-import spotify
-from spotify import SpotifyOAuth
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
 import re
 import os
 from flask import Flask
@@ -12,7 +12,7 @@ DISCORD_TOKEN = os.getenv("1354949209496752189")
 SPOTIFY_CLIENT_ID = os.getenv("261eb8789c39435aa9dfa8b877752b99")
 SPOTIFY_CLIENT_SECRET = os.getenv("baed6fc2438545e1b6eb65ab44bba7b6")
 SPOTIFY_REDIRECT_URI = os.getenv("http://localhost:8888/callback")
-SPOTIFY_PLAYLIST_ID = os.getenv("2jDHNTwRjUcfL8bFnxbFhA?si=smxlSKdtQ9ekI1Bezu5WtQ")
+SPOTIFY_PLAYLIST_ID = os.getenv("2jDHNTwRjUcfL8bFnxbFhA?si")
 
 # Flask app (keeps Railway service alive)
 app = Flask(__name__)
@@ -22,7 +22,7 @@ def home():
     return "Discord Bot is Running!"
 
 # Set up Spotify authentication
-sp = spotify.Spotify(auth_manager=SpotifyOAuth(
+sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     client_id=SPOTIFY_CLIENT_ID,
     client_secret=SPOTIFY_CLIENT_SECRET,
     redirect_uri=SPOTIFY_REDIRECT_URI,
