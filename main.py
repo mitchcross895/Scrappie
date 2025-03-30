@@ -1,6 +1,6 @@
 import discord
 import spotify
-from spotify.oauth2 import SpotifyOAuth
+from spotify import SpotifyOAuth
 import re
 import os
 from flask import Flask

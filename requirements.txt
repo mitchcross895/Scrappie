@@ -1,0 +1,4 @@
+discord.py
+spotify
+flask
+gunicorn
