@@ -11,11 +11,11 @@ from discord.ext import commands
 logging.basicConfig(level=logging.INFO)
 
 # Load environment variables
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "http://localhost:8888/callback")
-SPOTIFY_PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
+DISCORD_TOKEN = os.getenv("MTM1NDk0OTIwOTQ5Njc1MjE4OQ.Gb8KE3.q6d7M_KBVv-AS56kbG-Bw7k60_feZJPpf31h0E")
+SPOTIFY_CLIENT_ID = os.getenv("261eb8789c39435aa9dfa8b877752b99")
+SPOTIFY_CLIENT_SECRET = os.getenv("baed6fc2438545e1b6eb65ab44bba7b6")
+SPOTIFY_REDIRECT_URI = os.getenv("http://localhost:8888/callback")
+SPOTIFY_PLAYLIST_ID = os.getenv("2jDHNTwRjUcfL8bFnxbFhA")
 
 if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLAYLIST_ID]):
     logging.error("Missing one or more required environment variables!")
