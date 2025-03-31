@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 import re
 import os
 import logging
-import random
 import randfacts
 from flask import Flask
 from discord.ext import commands
@@ -48,25 +47,6 @@ intents = discord.Intents.default()
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.tree.command(name="add", description="Add a song to the playlist")
-@app_commands.describe(track_url="The URL of the Spotify track to add.")
-async def add_song(interaction: discord.Interaction, track_url: str):
-    match = re.search(SPOTIFY_URL_REGEX, track_url)
-    if match:
-        track_id = match.group(1)
-        try:
-            #Add song to Playlist
-            sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [f"spotify:track:{track_id}"])
-            await interaction.response.send_message(f"Track has been successfully added!")
-        except spotipy.exceptions.SpotifyException as e:
-            logging.error(f"Error {e}")
-            await interaction.response.send_message(f"Failed to add song {str(e)}.")
-        except Exception as e:
-            logging.error(f"Unexpected Error {e}")
-            await interaction.response.send_message(f"Failed to add song {str(e)}.")
-        else:
-            await interactionresponse.send_message(f"Invalid Spotify track URL.")
-
 @bot.event
 async def fact_slash(interaction: discord.Interaction):
     fact = randfacts.get_fact()
@@ -100,6 +80,18 @@ async def on_message(message):
             await message.channel.send(f"❌ Failed to add song: {str(e)}")
     
     await bot.process_commands(message)
+
+# Message-based fact command
+@bot.command()
+async def fact(ctx):
+    rfact = randfacts.get_fact()
+    await ctx.send(f"Did you know? {rfact}")
+
+# Slash command for fact
+@bot.tree.command(name="fact")
+async def fact_slash(interaction: discord.Interaction):
+    rfact = randfacts.get_fact()
+    await interaction.response.send_message(f"Did you know? {rfact}")
 
 # Message-based ping command
 @bot.command()
