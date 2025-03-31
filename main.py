@@ -6,6 +6,7 @@ import os
 import logging
 from flask import Flask
 from discord.ext import commands
+from discord import app_commands
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +48,11 @@ SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
 @bot.event
 async def on_ready():
     logging.info(f'Logged in as {bot.user}')
+    try:
+        await bot.tree.sync()  # Sync slash commands
+        logging.info("Slash commands synced.")
+    except Exception as e:
+        logging.error(f"Error syncing commands: {e}")
 
 @bot.event
 async def on_message(message):
@@ -64,6 +70,16 @@ async def on_message(message):
             await message.channel.send(f"❌ Failed to add song: {str(e)}")
     
     await bot.process_commands(message)
+
+# Message-based ping command
+@bot.command()
+async def ping(ctx):
+    await ctx.send("pong")
+
+# Slash command for ping
+@bot.tree.command(name="ping")
+async def ping_slash(interaction: discord.Interaction):
+    await interaction.response.send_message("pong")
 
 # Run bot and Flask together
 if __name__ == "__main__":
