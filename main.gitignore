@@ -1,8 +1,0 @@
-#Ignore Sensitive Info
-.env
-.vscode/
-venv/
-__pycache__/
-*.pyc
-*.pyo
-.idea/*.log
