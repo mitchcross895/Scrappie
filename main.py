@@ -15,7 +15,6 @@ from discord import app_commands
 logging.basicConfig(level=logging.INFO)
 
 # Load environment variables
-
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -46,60 +45,41 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 # Set up Discord bot with command handler
 intents = discord.Intents.default()
 intents.messages = True
+intents.message_content = True  # Ensure message content is enabled
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-@bot.tree.command(name="add", description="Add a song to the playlist")
-@app_commands.describe(track_url="The URL of the Spotify track to add.")
-async def add_song(interaction: discord.Interaction, track_url: str):
-    match = re.search(SPOTIFY_URL_REGEX, track_url)
-    if match:
-        track_id = match.group(1)
-        try:
-            sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [f"spotify:track:{track_id}"])
-            await interaction.response.send_message("Track has been successfully added!")
-        except spotipy.exceptions.SpotifyException as e:
-            logging.error(f"Error: {e}")
-            await interaction.response.send_message(f"Failed to add song: {str(e)}.")
-        except Exception as e:
-            logging.error(f"Unexpected Error: {e}")
-            await interaction.response.send_message(f"Failed to add song: {str(e)}.")
-    else:
-        await interaction.response.send_message("Invalid Spotify track URL.")
-
-
-@bot.event
-async def fact_slash(interaction: discord.Interaction):
-    fact = randfacts.get_fact()
-    await interaction.response.send_message(f"Did you know? {fact}")
 
 # Regular expression to match Spotify song links
 SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
 
-@bot.event
-async def on_ready():
-    logging.info(f'Logged in as {bot.user}')
-    try:
-        await bot.tree.sync()  # Sync slash commands
-        logging.info("Slash commands synced.")
-    except Exception as e:
-        logging.error(f"Error syncing commands: {e}")
-
-@bot.event
-async def on_message(message):
-    if message.author == bot.user:
-        return
+# Slash command to add a song to the playlist
+@bot.tree.command(name="add", description="Add a song to the playlist")
+@app_commands.describe(track_url="The URL of the Spotify track to add.")
+async def add_song(interaction: discord.Interaction, track_url: str):
+    logging.info(f"Received add song command with track URL: {track_url}")
+    match = re.search(SPOTIFY_URL_REGEX, track_url)
     
-    match = re.search(SPOTIFY_URL_REGEX, message.content)
     if match:
         track_id = match.group(1)
+        logging.info(f"Extracted track ID: {track_id}")
         try:
             sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [f"spotify:track:{track_id}"])
-            await message.channel.send("✅ Added to playlist!")
+            await interaction.response.send_message("Track has been successfully added!")
+            logging.info(f"Track {track_id} added to playlist.")
+        except spotipy.exceptions.SpotifyException as e:
+            logging.error(f"Error adding song to Spotify: {e}")
+            await interaction.response.send_message(f"Failed to add song: {str(e)}.")
         except Exception as e:
-            logging.error(f"Failed to add song: {e}")
-            await message.channel.send(f"❌ Failed to add song: {str(e)}")
-    
-    await bot.process_commands(message)
+            logging.error(f"Unexpected error: {e}")
+            await interaction.response.send_message(f"Failed to add song: {str(e)}.")
+    else:
+        await interaction.response.send_message("Invalid Spotify track URL.")
+        logging.warning(f"Invalid URL provided: {track_url}")
+
+# Slash command to get a random fact
+@bot.tree.command(name="fact", description="Get a random fact.")
+async def fact_slash(interaction: discord.Interaction):
+    fact = randfacts.get_fact()
+    await interaction.response.send_message(f"Did you know? {fact}")
 
 # Message-based ping command
 @bot.command()
@@ -110,6 +90,16 @@ async def ping(ctx):
 @bot.tree.command(name="ping")
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message("pong")
+
+# Sync commands and log in
+@bot.event
+async def on_ready():
+    logging.info(f'Logged in as {bot.user}')
+    try:
+        await bot.tree.sync()  # Sync slash commands
+        logging.info("Slash commands synced.")
+    except Exception as e:
+        logging.error(f"Error syncing commands: {e}")
 
 # Run bot and Flask together
 if __name__ == "__main__":
