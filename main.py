@@ -43,18 +43,6 @@ intents = discord.Intents.default()
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-#Slash Command for 'fact'
-@bot.command()
-async def fact(ctx):
-    rfact = randfacts.get_fact()
-    await ctx.send(f"Did you know? {rfact}")
-
-#Code for the 'fact' command
-@bot.tree.command(name="fact")
-async def fact_slash(interaction: discord.Interaction):
-    rfact = randfacts.get_fact()
-    await interaction.response.send_message(f"Did you know? {rfact}")
-
 # Regular expression to match Spotify song links
 SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
 
@@ -83,6 +71,18 @@ async def on_message(message):
             await message.channel.send(f"❌ Failed to add song: {str(e)}")
     
     await bot.process_commands(message)
+
+# Message-based fact command
+@bot.command()
+async def fact(ctx):
+    rfact = randfacts.get_fact()
+    await ctx.send(f"Did you know? {rfact}")
+
+# Slash command for fact
+@bot.tree.command(name="fact")
+async def fact_slash(interaction: discord.Interaction):
+    rfact = randfacts.get_fact()
+    await interaction.response.send_message(f"Did you know? {rfact}")
 
 # Message-based ping command
 @bot.command()
