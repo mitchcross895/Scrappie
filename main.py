@@ -139,6 +139,27 @@ async def ping(ctx):
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message("pong")
 
+#Regular command for radnom number generating
+@bot.command()
+async def number(ctx, min_num: int, max_num: int):
+    if min_num > max_num:
+        await ctx.send("Your smal number should be SMALLER than your bigger number...")
+        return
+
+    random_number = random.randint(min_num, max_num)
+    await ctx.send("Here is your number: {random_number}")
+
+#Slash command for number
+@bot.tree.command(name="number", description="Generate a random number between two values.")
+async def number_slash(interaction: discord.Interaction, min_num: int, max_num: int):
+    """Generates a random number between min_num and max_num."""
+    if min_num > max_num:
+        await interaction.response.send_message("Invalid range! The first number should be smaller than the second.", ephemeral=True)
+        return
+
+    random_number = random.randint(min_num, max_num)
+    await interaction.response.send_message(f"Here is your number: {random_number}")
+
 # Sync commands and log in
 @bot.event
 async def on_ready():
