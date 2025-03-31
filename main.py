@@ -4,7 +4,6 @@ from spotipy.oauth2 import SpotifyOAuth
 import re
 import os
 import logging
-import random
 import randfacts
 from flask import Flask
 from discord.ext import commands
