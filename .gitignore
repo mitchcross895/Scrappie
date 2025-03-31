@@ -5,4 +5,7 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
-.idea/*.log
+.idea/
+*.log
+
+input/*xlsx
