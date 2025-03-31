@@ -43,10 +43,14 @@ intents = discord.Intents.default()
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.event
+@bot.command()
+async def fact(ctx):
+    await ctx.send("fact")
+
+@bot.tree.command(name=fact)
 async def fact_slash(interaction: discord.Interaction):
-    fact = randfacts.get_fact()
-    await interaction.response.send_message(f"Did you know? {fact}")
+    rfact = randfacts.get_fact()
+    await interaction.response.send_message(f"Did you know? {rfact}")
 
 # Regular expression to match Spotify song links
 SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
