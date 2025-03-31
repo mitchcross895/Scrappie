@@ -55,17 +55,17 @@ async def add_song(interaction: discord.Interaction, track_url: str):
     if match:
         track_id = match.group(1)
         try:
-            #Add song to Playlist
             sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [f"spotify:track:{track_id}"])
-            await interaction.response.send_message(f"Track has been successfully added!")
+            await interaction.response.send_message("Track has been successfully added!")
         except spotipy.exceptions.SpotifyException as e:
-            logging.error(f"Error {e}")
-            await interaction.response.send_message(f"Failed to add song {str(e)}.")
+            logging.error(f"Error: {e}")
+            await interaction.response.send_message(f"Failed to add song: {str(e)}.")
         except Exception as e:
-            logging.error(f"Unexpected Error {e}")
-            await interaction.response.send_message(f"Failed to add song {str(e)}.")
-        else:
-            await interactionresponse.send_message(f"Invalid Spotify track URL.")
+            logging.error(f"Unexpected Error: {e}")
+            await interaction.response.send_message(f"Failed to add song: {str(e)}.")
+    else:
+        await interaction.response.send_message("Invalid Spotify track URL.")
+
 
 @bot.event
 async def fact_slash(interaction: discord.Interaction):
