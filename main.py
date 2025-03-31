@@ -160,6 +160,21 @@ async def number_slash(interaction: discord.Interaction, min_num: int, max_num: 
     random_number = random.randint(min_num, max_num)
     await interaction.response.send_message(f"Here is your number: {random_number}")
 
+#Regular Command for flipping a coin
+@bot.command()
+async def coin(ctx):
+    """Flips a coin and returns Heads or Tails."""
+    result = "Heads" if random.randint(1, 2) == 1 else "Tails"
+    await ctx.send(f"It was {result}!")
+
+#Slash command for coin
+@bot.tree.command(name="coin", description="Flip a coin.")
+async def coin_slash(interaction: discord.Interaction):
+    """Flips a coin and returns Heads or Tails."""
+    result = "Heads" if random.randint(1, 2) == 1 else "Tails"
+    await interaction.response.send_message(f"It was {result}!")
+
+
 # Sync commands and log in
 @bot.event
 async def on_ready():
