@@ -43,11 +43,14 @@ intents = discord.Intents.default()
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+#Slash Command for 'fact'
 @bot.command()
 async def fact(ctx):
-    await ctx.send("fact")
+    rfact = randfacts.get_fact()
+    await ctx.send(f"Did you know? {rfact}")
 
-@bot.tree.command(name=fact)
+#Code for the 'fact' command
+@bot.tree.command(name="fact")
 async def fact_slash(interaction: discord.Interaction):
     rfact = randfacts.get_fact()
     await interaction.response.send_message(f"Did you know? {rfact}")
