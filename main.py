@@ -1,5 +1,6 @@
 import discord
 import spotipy
+import requests
 from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from dotenv import load_dotenv
 import re
