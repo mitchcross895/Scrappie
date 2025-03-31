@@ -1,6 +1,6 @@
 import discord
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyOAuth import SpotifyClientCredentials
 from dotenv import load_dotenv
 import re
 import os
@@ -51,13 +51,16 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Regular expression to match Spotify song links
 SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
 
+# Authenticate with the Spotify API
+client_credentials_manager = SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET)
+
 # Slash command to add a song to the playlist
 @bot.tree.command(name="add", description="Add a song to the playlist")
 @app_commands.describe(track_url="The URL of the Spotify track to add.")
 async def add_song(interaction: discord.Interaction, track_url: str):
     logging.info(f"Received add song command with track URL: {track_url}")
     match = re.search(SPOTIFY_URL_REGEX, track_url)
-    
+
     if match:
         track_id = match.group(1)
         logging.info(f"Extracted track ID: {track_id}")
@@ -74,6 +77,18 @@ async def add_song(interaction: discord.Interaction, track_url: str):
     else:
         await interaction.response.send_message("Invalid Spotify track URL.")
         logging.warning(f"Invalid URL provided: {track_url}")
+
+        # Search for a song
+def search_song(query):
+    results = sp.search(q=query, type='track')
+    if results['tracks']['items']:
+        return results['tracks']['items'][0]
+    else:
+        return None
+
+    # Add a song to a playlist
+def add_song_to_playlist(playlist_id, track_uri):
+    sp.playlist_add_items(playlist_id, [track_uri])
 
 # Regular command
 @bot.command()
