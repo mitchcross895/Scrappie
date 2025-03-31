@@ -101,6 +101,32 @@ async def random_fact_slash(interaction: discord.Interaction):
     fact = randfacts.get_fact()
     await interaction.response.send_message(f"Did you know? {fact}")
 
+#Regular Command for Terraria Wiki
+@bot.command()
+async def wiki(ctx, *, query: str):
+    base_url = "https://terraria.wiki.gg/wiki/"
+    query = query.replace(" ", "_")
+    wiki_url = f"{base_url}{query}"
+
+    response = requests.get(wiki_url)
+    if response.status_code == 200:
+        await ctx.send(f"Here's the Terraria Wiki page for **{query}**: {wiki_url}")
+    else:
+        await ctx.send(f"Sorry, {query} doesn't seem to exist. Maybe check your spelling, or try a different entity.")
+
+# Slash Command for wiki
+@bot.tree.command(name="wiki", description="Search the Terraria Wiki for an entity page.")
+async def wiki_slash(interaction: discord.Interaction, query: str):
+    base_url = "https://terraria.wiki.gg/wiki/"
+    query = query.replace(" ", "_")
+    wiki_url = f"{base_url}{query}"
+
+    response = requests.get(wiki_url)
+    if response.status_code == 200:
+        await interaction.response.send_message(f"Here's the Terraria Wiki page for **{query}**: {wiki_url}")
+    else:
+        await interaction.response.send_message(f"Sorry, {query} doesn't seem to exist. Maybe check your spelling, or try a different entity.")
+
 
 # Message-based ping command
 @bot.command()
