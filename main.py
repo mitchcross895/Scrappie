@@ -1,6 +1,7 @@
 import discord
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+from dotenv import load_dotenv
 import re
 import os
 import logging
@@ -14,11 +15,14 @@ from discord import app_commands
 logging.basicConfig(level=logging.INFO)
 
 # Load environment variables
-DISCORD_TOKEN = ("MTM1NDk0OTIwOTQ5Njc1MjE4OQ.Gb8KE3.q6d7M_KBVv-AS56kbG-Bw7k60_feZJPpf31h0E")
-SPOTIFY_CLIENT_ID = ("261eb8789c39435aa9dfa8b877752b99")
-SPOTIFY_CLIENT_SECRET = ("baed6fc2438545e1b6eb65ab44bba7b6")
-SPOTIFY_REDIRECT_URI = ("http://localhost:8888/callback")
-SPOTIFY_PLAYLIST_ID = ("2jDHNTwRjUcfL8bFnxbFhA")
+load_dotenv()
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+SPOTIFY_PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
+
 
 if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLAYLIST_ID]):
     logging.error("Missing one or more required environment variables!")
@@ -43,6 +47,25 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 intents = discord.Intents.default()
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.tree.command(name="add", description="Add a song to the playlist")
+@app_commands.describe(track_url="The URL of the Spotify track to add.")
+async def add_song(interaction: discord.Interaction, track_url: str):
+    match = re.search(SPOTIFY_URL_REGEX, track_url)
+    if match:
+        track_id = match.group(1)
+        try:
+            #Add song to Playlist
+            sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [f"spotify:track:{track_id}"])
+            await interaction.response.send_message(f"Track has been successfully added!")
+        except spotipy.exceptions.SpotifyException as e:
+            logging.error(f"Error {e}")
+            await interaction.response.send_message(f"Failed to add song {str(e)}.")
+        except Exception as e:
+            logging.error(f"Unexpected Error {e}")
+            await interaction.response.send_message(f"Failed to add song {str(e)}.")
+        else:
+            await interactionresponse.send_message(f"Invalid Spotify track URL.")
 
 @bot.event
 async def fact_slash(interaction: discord.Interaction):
