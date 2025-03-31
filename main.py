@@ -4,6 +4,8 @@ from spotipy.oauth2 import SpotifyOAuth
 import re
 import os
 import logging
+import random
+import randfacts
 from flask import Flask
 from discord.ext import commands
 from discord import app_commands
@@ -41,6 +43,11 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 intents = discord.Intents.default()
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
+async def fact_slash(interaction: discord.Interaction):
+    fact = randfacts.get_fact()
+    await interaction.response.send_message(f"Did you know? {fact}")
 
 # Regular expression to match Spotify song links
 SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"

@@ -2,3 +2,5 @@ discord.py
 flask
 gunicorn
 spotipy
+random
+randfacts
