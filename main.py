@@ -81,7 +81,7 @@ async def fact(ctx):
     await ctx.send("Here's a fact!")
 
 # Slash command with a unique name
-@bot.tree.command(name="random_fact", description="Get a random fact.")
+@bot.tree.command(name="fact", description="Get a random fact.")
 async def random_fact_slash(interaction: discord.Interaction):
     fact = randfacts.get_fact()
     await interaction.response.send_message(f"Did you know? {fact}")
