@@ -1,7 +1,7 @@
 import discord
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
-import load_dotenv from dotenv
+from load_dotenv import dotenv
 import re
 import os
 import logging
