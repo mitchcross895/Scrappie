@@ -1,6 +1,7 @@
 import discord
 import spotipy
 import requests
+import openai
 from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from dotenv import load_dotenv
 import re
@@ -23,8 +24,9 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = ("http://localhost:8888/callback")
 SPOTIFY_PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLAYLIST_ID]):
+if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLAYLIST_ID, OPENAI_API_KEY]):
     logging.error("Missing one or more required environment variables!")
     exit(1)
 
@@ -173,6 +175,36 @@ async def coin_slash(interaction: discord.Interaction):
     """Flips a coin and returns Heads or Tails."""
     result = "Heads" if random.randint(1, 2) == 1 else "Tails"
     await interaction.response.send_message(f"It was {result}!")
+
+#Command for asking OpenAI a question
+@bot.command()
+async def ask(ctx, *, question: str):
+    """Ask OpenAI a question"""
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages = [{"role": "user", "content": question}]
+        )
+        ai_reply = response["choices"][0]["message"]["content"]
+        await ctx.send(ai_reply)
+    except Exception as e:
+        logging.error(f"Error with OpenAI API: {e}")
+        await ctx.send("Sorry, I couldn't process that right now.")
+
+#Slash command for ask
+@bot.tree.command(name="ask", description="Ask OpenAI a question")
+async def ask_slash(interaction: discord.Interaction, question: str):
+    """Ask the AI using a slash command."""
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": question}]
+        )
+        ai_reply = response["choices"][0]["message"]["content"]
+        await interaction.response.send_message(ai_reply)
+    except Exception as e:
+        logging.error(f"Error with OpenAI API: {e}")
+        await interaction.response.send_message("Sorry, I couldn't process that request.")
 
 
 # Sync commands and log in
