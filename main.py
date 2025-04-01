@@ -181,15 +181,19 @@ async def coin_slash(interaction: discord.Interaction):
 async def ask(ctx, *, question: str):
     """Ask OpenAI a question"""
     try:
-        response = openai.ChatCompletion.create(
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)  # Correct API usage
+
+        response = client.chat.completions.create(
             model="gpt-4",
-            messages = [{"role": "user", "content": question}]
+            messages=[{"role": "user", "content": question}]
         )
-        ai_reply = response["choices"][0]["message"]["content"]
-        await ctx.send(ai_reply)
+        ai_reply = response.choices[0].message.content  # Correct response format
+
+        await ctx.send(ai_reply)  # Send the response to Discord
     except Exception as e:
         logging.error(f"Error with OpenAI API: {e}")
         await ctx.send("Sorry, I couldn't process that right now.")
+
 
 #Slash command for ask
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
