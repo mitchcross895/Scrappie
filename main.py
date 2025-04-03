@@ -179,7 +179,6 @@ async def coin_slash(interaction: discord.Interaction):
 #Command for asking OpenAI a question
 @bot.command()
 async def ask(ctx, *, question: str):
-    client = openai()
     """Ask OpenAI a question"""
     try:
         client = openai.OpenAI(api_key=OPENAI_API_KEY)  # Correct API usage
@@ -200,9 +199,8 @@ async def ask(ctx, *, question: str):
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
 async def ask_slash(interaction: discord.Interaction, question: str):
     """Ask the AI using a slash command."""
-    client = openai()
     try:
-        openai.api_key = OPENAI_API_KEY
+        client = openai.api_key = OPENAI_API_KEY
         response = openai.ChatCompletion.create(
             model="gpt-4o",
             messages= [ 
