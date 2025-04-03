@@ -1,7 +1,7 @@
 import discord
 import spotipy
 import requests
-from openai import openai
+import openai 
 from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from dotenv import load_dotenv
 import re
@@ -202,9 +202,12 @@ async def ask_slash(interaction: discord.Interaction, question: str):
     """Ask the AI using a slash command."""
     client = openai()
     try:
+        openai.api_key = OPENAI_API_KEY
         response = openai.ChatCompletion.create(
             model="gpt-4o",
-            messages={question}
+            messages= [ 
+                {"role": "user", "content": question}
+            ]
         )
         ai_reply = response.choices[0].message_content
         await interaction.response.send_message(ai_reply)
