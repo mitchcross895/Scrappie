@@ -1,7 +1,7 @@
 import discord
 import spotipy
 import requests
-import openai
+from openai import openai
 from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from dotenv import load_dotenv
 import re
@@ -179,15 +179,16 @@ async def coin_slash(interaction: discord.Interaction):
 #Command for asking OpenAI a question
 @bot.command()
 async def ask(ctx, *, question: str):
+    client = openai()
     """Ask OpenAI a question"""
     try:
         client = openai.OpenAI(api_key=OPENAI_API_KEY)  # Correct API usage
 
         response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": question}]
+            model="gpt-4o",
+            input = {question}
         )
-        ai_reply = response.choices[0].message.content  # Correct response format
+        ai_reply = response.choices[0].message.message_content
 
         await ctx.send(ai_reply)  # Send the response to Discord
     except Exception as e:
@@ -199,12 +200,13 @@ async def ask(ctx, *, question: str):
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
 async def ask_slash(interaction: discord.Interaction, question: str):
     """Ask the AI using a slash command."""
+    client = openai()
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": question}]
+            model="gpt-4o",
+            messages={question}
         )
-        ai_reply = response["choices"][0]["message"]["content"]
+        ai_reply = response.choices[0].message_content
         await interaction.response.send_message(ai_reply)
     except Exception as e:
         logging.error(f"Error with OpenAI API: {e}")
