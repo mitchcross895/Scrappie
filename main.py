@@ -1,7 +1,7 @@
 import discord
 import spotipy
 import requests
-import openai 
+from openai import OpenAI
 from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from dotenv import load_dotenv
 import re
@@ -181,7 +181,9 @@ async def coin_slash(interaction: discord.Interaction):
 async def ask(ctx, *, question: str):
     """Ask OpenAI a question"""
     try:
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)  # Correct API usage
+        client = OpenAI(
+            api_key=os.getenv["OPENAI_API_KEY"]
+        )
 
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -200,8 +202,10 @@ async def ask(ctx, *, question: str):
 async def ask_slash(interaction: discord.Interaction, question: str):
     """Ask the AI using a slash command."""
     try:
-        client = openai.api_key = OPENAI_API_KEY
-        response = openai.ChatCompletion.create(
+        client = OpenAI(
+            api_key=os.getenv["OPENAI_API_KEY"]
+        )
+        response = OpenAI.ChatCompletion.create(
             model="gpt-4o",
             messages= [ 
                 {"role": "user", "content": question}
