@@ -22,7 +22,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_REDIRECT_URI = ("http://localhost:8888/callback")
+SPOTIFY_REDIRECT_URI = "http://localhost:8888/callback"
 SPOTIFY_PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -54,34 +54,49 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Regular expression to match Spotify song links
 SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
 
-# Authenticate with the Spotify API
+# Authenticate with the Spotify API using Client Credentials
 client_credentials_manager = SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET)
 
 # Slash command to add a song to the playlist
-@bot.tree.command(name="add", description="Add a song to the playlist")
-@app_commands.describe(track_url="The URL of the Spotify track to add.")
-async def add_song(interaction: discord.Interaction, track_url: str):
-    logging.info(f"Received add song command with track URL: {track_url}")
-    match = re.search(SPOTIFY_URL_REGEX, track_url)
+@bot.tree.command(name="add", description="Add a song to the playlist using a URL or search query.")
+@app_commands.describe(track="Spotify link or search query for a song.")
+async def add_song(interaction: discord.Interaction, track: str):
+    await interaction.response.defer()  # prevent timeout
 
+    # Check if it's a Spotify URL
+    match = re.search(SPOTIFY_URL_REGEX, track)
     if match:
         track_id = match.group(1)
-        logging.info(f"Extracted track ID: {track_id}")
-        try:
-            sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [f"spotify:track:{track_id}"])
-            await interaction.response.send_message("Track has been successfully added!")
-            logging.info(f"Track {track_id} added to playlist.")
-        except spotipy.exceptions.SpotifyException as e:
-            logging.error(f"Error adding song to Spotify: {e}")
-            await interaction.response.send_message(f"Failed to add song: {str(e)}.")
-        except Exception as e:
-            logging.error(f"Unexpected error: {e}")
-            await interaction.response.send_message(f"Failed to add song: {str(e)}.")
+        track_uri = f"spotify:track:{track_id}"
     else:
-        await interaction.response.send_message("Invalid Spotify track URL.")
-        logging.warning(f"Invalid URL provided: {track_url}")
+        # Try searching for the track
+        result = search_song(track)
+        if not result:
+            await interaction.followup.send("Couldn't find a track with that name.")
+            return
+        track_uri = result["uri"]
+        track_id = result["id"]
 
-        # Search for a song
+    # Duplicate-check: verify if the track is already in the playlist
+    existing_tracks = sp.playlist_tracks(SPOTIFY_PLAYLIST_ID)
+    if any(item['track']['id'] == track_id for item in existing_tracks['items']):
+        await interaction.followup.send("That track is already in the playlist! ✅")
+        return
+
+    try:
+        sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [track_uri])
+        track_info = sp.track(track_id)
+        track_name = track_info['name']
+        artist_name = track_info['artists'][0]['name']
+        await interaction.followup.send(f"Added **{track_name}** by **{artist_name}** to the playlist! 🎶")
+    except spotipy.exceptions.SpotifyException as e:
+        logging.error(f"Spotify error: {e}")
+        await interaction.followup.send(f"Spotify error: {str(e)}")
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        await interaction.followup.send(f"Failed to add song: {str(e)}")
+
+# Helper function to search for a song by query
 def search_song(query):
     results = sp.search(q=query, type='track')
     if results['tracks']['items']:
@@ -89,35 +104,13 @@ def search_song(query):
     else:
         return None
 
-    # Add a song to a playlist
-def add_song_to_playlist(playlist_id, track_uri):
-    sp.playlist_add_items(playlist_id, [track_uri])
-
-# Regular command
-@bot.command()
-async def fact(ctx):
-    await ctx.send("Here's a fact!")
-
-# Slash command with a unique name
+# Slash command to get a random fact
 @bot.tree.command(name="fact", description="Get a random fact.")
-async def random_fact_slash(interaction: discord.Interaction):
+async def fact_slash(interaction: discord.Interaction):
     fact = randfacts.get_fact()
     await interaction.response.send_message(f"Did you know? {fact}")
 
-#Regular Command for Terraria Wiki
-@bot.command()
-async def wiki(ctx, *, query: str):
-    base_url = "https://terraria.wiki.gg/wiki/"
-    query = query.replace(" ", "_")
-    wiki_url = f"{base_url}{query}"
-
-    response = requests.get(wiki_url)
-    if response.status_code == 200:
-        await ctx.send(f"Here's the Terraria Wiki page for **{query}**: {wiki_url}")
-    else:
-        await ctx.send(f"Sorry, {query} doesn't seem to exist. Maybe check your spelling, or try a different entity.")
-
-# Slash Command for wiki
+# Slash command for Terraria Wiki search
 @bot.tree.command(name="wiki", description="Search the Terraria Wiki for an entity page.")
 async def wiki_slash(interaction: discord.Interaction, query: str):
     base_url = "https://terraria.wiki.gg/wiki/"
@@ -130,31 +123,14 @@ async def wiki_slash(interaction: discord.Interaction, query: str):
     else:
         await interaction.response.send_message(f"Sorry, {query} doesn't seem to exist. Maybe check your spelling, or try a different entity.")
 
-
-# Message-based ping command
-@bot.command()
-async def ping(ctx):
-    await ctx.send("pong")
-
 # Slash command for ping
-@bot.tree.command(name="ping")
+@bot.tree.command(name="ping", description="Check the bot's latency.")
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message("pong")
 
-#Regular command for radnom number generating
-@bot.command()
-async def number(ctx, min_num: int, max_num: int):
-    if min_num > max_num:
-        await ctx.send("Your small number should be SMALLER than your bigger number...")
-        return
-
-    random_number = random.randint(min_num, max_num)
-    await ctx.send(f"Here is your number: {random_number}")
-
-#Slash command for number
+# Slash command to generate a random number
 @bot.tree.command(name="number", description="Generate a random number between two values.")
 async def number_slash(interaction: discord.Interaction, min_num: int, max_num: int):
-    """Generates a random number between min_num and max_num."""
     if min_num > max_num:
         await interaction.response.send_message("Invalid range! The first number should be smaller than the second.", ephemeral=True)
         return
@@ -162,46 +138,16 @@ async def number_slash(interaction: discord.Interaction, min_num: int, max_num: 
     random_number = random.randint(min_num, max_num)
     await interaction.response.send_message(f"Here is your number: {random_number}")
 
-#Regular Command for flipping a coin
-@bot.command()
-async def coin(ctx):
-    """Flips a coin and returns Heads or Tails."""
-    result = "Heads" if random.randint(1, 2) == 1 else "Tails"
-    await ctx.send(f"It was {result}!")
-
-#Slash command for coin
+# Slash command to flip a coin
 @bot.tree.command(name="coin", description="Flip a coin.")
 async def coin_slash(interaction: discord.Interaction):
-    """Flips a coin and returns Heads or Tails."""
     result = "Heads" if random.randint(1, 2) == 1 else "Tails"
     await interaction.response.send_message(f"It was {result}!")
 
-#Command for asking OpenAI a question
-@bot.command()
-async def ask(ctx, *, question: str):
-    """Ask OpenAI a question"""
-    try:
-        client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
-
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": question}],
-            max_tokens=50
-        )
-        ai_reply = response.choices[0].message.content
-
-        await ctx.send(ai_reply)  # Send the response to Discord
-    except Exception as e:
-        logging.error(f"Error with OpenAI API: {e}")
-        await ctx.send("Sorry, I couldn't process that right now.")
-
-#Slash command for ask
+# Slash command to ask OpenAI a question
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
 async def ask_slash(interaction: discord.Interaction, question: str):
-    # Immediately defer the response to prevent timeout
-    await interaction.response.defer()
+    await interaction.response.defer()  # Prevent timeout
     try:
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         response = client.chat.completions.create(
@@ -210,12 +156,10 @@ async def ask_slash(interaction: discord.Interaction, question: str):
             max_tokens=50
         )
         ai_reply = response.choices[0].message.content
-        # Send the result as a followup message after deferring
         await interaction.followup.send(ai_reply)
     except Exception as e:
         logging.error(f"Error with OpenAI API: {e}")
         await interaction.followup.send("Sorry, I couldn't process that request.")
-
 
 # Sync commands and log in
 @bot.event
@@ -230,12 +174,12 @@ async def on_ready():
 # Run bot and Flask together
 if __name__ == "__main__":
     from threading import Thread
-    
+
     def run_flask():
         app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
-    
+
     Thread(target=run_flask).start()
-    
+
     try:
         bot.run(DISCORD_TOKEN)
     except Exception as e:
