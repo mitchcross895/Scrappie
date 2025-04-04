@@ -186,7 +186,7 @@ async def ask(ctx, *, question: str):
         )
 
         response = client.chat.completions.create(
-            model="gpt-o3-mini",
+            model="gpt-o4-mini",
             messages=[{"role": "user", "content": question}]
         )
         ai_reply = response.choices[0].message.message_content
@@ -205,7 +205,7 @@ async def ask_slash(interaction: discord.Interaction, question: str):
             api_key=os.getenv("OPENAI_API_KEY")
         )
         response = client.chat.completions.create(
-            model="gpt-o3-mini",
+            model="gpt-o4-mini",
             messages=[{"role": "user", "content": question}]
         )
         ai_reply = response.choices[0].message_content
