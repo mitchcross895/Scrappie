@@ -189,7 +189,7 @@ async def ask(ctx, *, question: str):
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": question}]
         )
-        ai_reply = response.choices[0].message.message_content
+        ai_reply = response.choices[0].message.content
 
         await ctx.send(ai_reply)  # Send the response to Discord
     except Exception as e:
@@ -208,7 +208,7 @@ async def ask_slash(interaction: discord.Interaction, question: str):
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": question}]
         )
-        ai_reply = response.choices[0].message_content
+        ai_reply = response.choices[0].message.content
         await interaction.response.send_message(ai_reply)
     except Exception as e:
         logging.error(f"Error with OpenAI API: {e}")
