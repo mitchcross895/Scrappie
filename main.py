@@ -145,11 +145,11 @@ async def ping_slash(interaction: discord.Interaction):
 @bot.command()
 async def number(ctx, min_num: int, max_num: int):
     if min_num > max_num:
-        await ctx.send("Your smal number should be SMALLER than your bigger number...")
+        await ctx.send("Your small number should be SMALLER than your bigger number...")
         return
 
     random_number = random.randint(min_num, max_num)
-    await ctx.send("Here is your number: {random_number}")
+    await ctx.send(f"Here is your number: {random_number}")
 
 #Slash command for number
 @bot.tree.command(name="number", description="Generate a random number between two values.")
@@ -182,12 +182,12 @@ async def ask(ctx, *, question: str):
     """Ask OpenAI a question"""
     try:
         client = OpenAI(
-            api_key=os.getenv["OPENAI_API_KEY"]
+            api_key=os.getenv("OPENAI_API_KEY")
         )
 
         response = client.chat.completions.create(
             model="gpt-4o",
-            input = {question}
+            messages=[{"role": "user", "content": question}]
         )
         ai_reply = response.choices[0].message.message_content
 
@@ -203,13 +203,11 @@ async def ask_slash(interaction: discord.Interaction, question: str):
     """Ask the AI using a slash command."""
     try:
         client = OpenAI(
-            api_key=os.getenv["OPENAI_API_KEY"]
+            api_key=os.getenv("OPENAI_API_KEY")
         )
-        response = OpenAI.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o",
-            messages= [ 
-                {"role": "user", "content": question}
-            ]
+            messages=[{"role": "user", "content": question}]
         )
         ai_reply = response.choices[0].message_content
         await interaction.response.send_message(ai_reply)
