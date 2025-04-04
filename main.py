@@ -186,7 +186,7 @@ async def ask(ctx, *, question: str):
         )
 
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-o3-mini",
             messages=[{"role": "user", "content": question}]
         )
         ai_reply = response.choices[0].message.message_content
@@ -195,7 +195,6 @@ async def ask(ctx, *, question: str):
     except Exception as e:
         logging.error(f"Error with OpenAI API: {e}")
         await ctx.send("Sorry, I couldn't process that right now.")
-
 
 #Slash command for ask
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
@@ -206,7 +205,7 @@ async def ask_slash(interaction: discord.Interaction, question: str):
             api_key=os.getenv("OPENAI_API_KEY")
         )
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-o3-mini",
             messages=[{"role": "user", "content": question}]
         )
         ai_reply = response.choices[0].message_content
