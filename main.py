@@ -199,20 +199,20 @@ async def ask(ctx, *, question: str):
 #Slash command for ask
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
 async def ask_slash(interaction: discord.Interaction, question: str):
-    """Ask the AI using a slash command."""
+    # Immediately defer the response to prevent timeout
+    await interaction.response.defer()
     try:
-        client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": question}]
         )
         ai_reply = response.choices[0].message.content
-        await interaction.response.send_message(ai_reply)
+        # Send the result as a followup message after deferring
+        await interaction.followup.send(ai_reply)
     except Exception as e:
         logging.error(f"Error with OpenAI API: {e}")
-        await interaction.response.send_message("Sorry, I couldn't process that request.")
+        await interaction.followup.send("Sorry, I couldn't process that request.")
 
 
 # Sync commands and log in
