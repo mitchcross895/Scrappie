@@ -13,7 +13,6 @@ from flask import Flask
 from discord.ext import commands
 from discord import app_commands
 from spellchecker import SpellChecker
-import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)

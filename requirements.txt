@@ -7,4 +7,3 @@ dotenv
 requests
 openai
 pyspellchecker
-re
