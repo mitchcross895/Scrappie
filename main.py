@@ -13,6 +13,7 @@ from flask import Flask
 from discord.ext import commands
 from discord import app_commands
 from spellchecker import SpellChecker
+import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -171,7 +172,7 @@ async def on_message(message):
     sentence = message.content.strip()
     if not sentence:
         return 
-    word_list = sentence.split()
+    word_list = re.findall(r"[\w']+", sentence)
     spell = SpellChecker()
     misspelled = spell.unknown(word_list)
     if misspelled:
