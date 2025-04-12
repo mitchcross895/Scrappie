@@ -162,24 +162,32 @@ async def ask_slash(interaction: discord.Interaction, question: str):
         logging.error(f"Error with OpenAI API: {e}")
         await interaction.followup.send("Sorry, I couldn't process that request.")
 
-#Spell Checking function
-@bot.command(name="spell_check")
-async def on_message(ctx, *, sentence: str):
+@bot.event
+async def on_message(message):
+    # Ignore messages sent by bots.
+    if message.author.bot:
+        return
+
+    sentence = message.content.strip()
+    if not sentence:
+        return 
     word_list = sentence.split()
     spell = SpellChecker()
     misspelled = spell.unknown(word_list)
     if misspelled:
-        number = random.randint(1,5)
+        number = random.randint(1, 5)
         if number == 1:
-            await ctx.send("Let's try that again, shall we?")
+            response = "Let's try that again, shall we?"
         elif number == 2:
-            await ctx.send("Great spelling, numb-nuts!")
+            response = "Great spelling, numb-nuts!"
         elif number == 3:
-            await ctx.send("Learn to spell, Sandwich.")
+            response = "Learn to spell, Sandwich."
         elif number == 4:
-            await ctx.send("Learn English, Torta.")
-        elif number ==5:
-            await ctx.send("Read a book, Schmuck!")
+            response = "Learn English, Torta."
+        elif number == 5:
+            response = "Read a book, Schmuck!"
+        
+        await message.channel.send(response)
     else:
         return
 
