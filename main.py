@@ -12,6 +12,7 @@ import randfacts
 from flask import Flask
 from discord.ext import commands
 from discord import app_commands
+from spellchecker import SpellChecker
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -160,6 +161,20 @@ async def ask_slash(interaction: discord.Interaction, question: str):
     except Exception as e:
         logging.error(f"Error with OpenAI API: {e}")
         await interaction.followup.send("Sorry, I couldn't process that request.")
+
+#Spell Checking function
+@bot.command(name="spell_check")
+async def on_message(ctx, *, message, sentence: str):
+    sentence = message
+    word_list = sentence.split()
+    spell = SpellChecker()
+    misspelled = spell.unknown(word_list)
+    if misspelled:
+        for word in misspelled:
+            correction = spell.correction(word)
+            await ctx.send(f"Correction: {correction}")
+    else:
+        return
 
 # Sync commands and log in
 @bot.event
