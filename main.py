@@ -164,15 +164,22 @@ async def ask_slash(interaction: discord.Interaction, question: str):
 
 #Spell Checking function
 @bot.command(name="spell_check")
-async def on_message(ctx, *, message, sentence: str):
-    sentence = message
+async def on_message(ctx, *, sentence: str):
     word_list = sentence.split()
     spell = SpellChecker()
     misspelled = spell.unknown(word_list)
     if misspelled:
-        for word in misspelled:
-            correction = spell.correction(word)
-            await ctx.send(f"Correction: {correction}")
+        number = random.randint(1,5)
+        if number == 1:
+            await ctx.send("Let's try that again, shall we?")
+        elif number == 2:
+            await ctx.send("Great spelling, numb-nuts!")
+        elif number == 3:
+            await ctx.send("Learn to spell, Sandwich.")
+        elif number == 4:
+            await ctx.send("Learn English, Torta.")
+        elif number ==5:
+            await ctx.send("Read a book, Schmuck!")
     else:
         return
 
