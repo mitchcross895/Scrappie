@@ -6,4 +6,4 @@ randfacts
 dotenv
 requests
 openai
-spellchecker
+pyspellchecker
