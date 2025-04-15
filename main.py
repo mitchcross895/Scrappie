@@ -173,6 +173,7 @@ async def on_message(message):
         return 
     word_list = re.findall(r"[\w']+", sentence)
     spell = SpellChecker()
+    spell.word_frequency.load_text_file('GitHub/Discord-Bot/addedwords.txt')
     misspelled = spell.unknown(word_list)
     if misspelled:
         number = random.randint(1, 5)
