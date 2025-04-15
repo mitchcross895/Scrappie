@@ -180,7 +180,7 @@ async def on_message(message):
 
     misspelled = spell.unknown(word_list)
     if misspelled:
-        number = random.randint(1, 5)
+        number = random.randint(1, 10)
         if number == 1:
             response = "Let's try that again, shall we?"
         elif number == 2:
@@ -191,7 +191,17 @@ async def on_message(message):
             response = "Learn English, Torta."
         elif number == 5:
             response = "Read a book, Schmuck!"
-        
+        elif number == 6:
+            response = "Seems like your dictionary took a vacation, pal!"
+        elif number == 7:
+            response = "Even your keyboard is questioning your grammar, genius."
+        elif number == 8:
+            response = "Autocorrect just waved the white flag, rookie."
+        elif number == 9:
+            response = "Are you inventing a new language? Because that’s something else!"
+        elif number == 10:
+            response = "Spell check is tapping out—maybe it's time for a lesson!"
+
         await message.channel.send(response)
     else:
         return
