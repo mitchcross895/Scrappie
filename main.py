@@ -17,7 +17,6 @@ from spellchecker import SpellChecker
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# Load environment variables
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -31,7 +30,6 @@ if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLA
     logging.error("Missing one or more required environment variables!")
     exit(1)
 
-# Flask app (keeps Railway service alive)
 app = Flask(__name__)
 
 @app.route('/')
@@ -162,18 +160,24 @@ async def ask_slash(interaction: discord.Interaction, question: str):
         logging.error(f"Error with OpenAI API: {e}")
         await interaction.followup.send("Sorry, I couldn't process that request.")
 
+import os
+
 @bot.event
 async def on_message(message):
-    # Ignore messages sent by bots.
     if message.author.bot:
         return
 
     sentence = message.content.strip()
     if not sentence:
         return 
+
     word_list = re.findall(r"[\w']+", sentence)
     spell = SpellChecker()
-    spell.word_frequency.load_text_file('GitHub/Discord-Bot/addedwords.txt')
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, "addedwords.txt")
+    spell.word_frequency.load_text_file(file_path)
+
     misspelled = spell.unknown(word_list)
     if misspelled:
         number = random.randint(1, 5)
