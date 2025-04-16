@@ -147,20 +147,16 @@ async def coin_slash(interaction: discord.Interaction):
 
 @bot.tree.command(name="trivia", description="Get a random trivia question.")
 async def trivia_slash(interaction: discord.Interaction):
-
     DB_API_URL = "https://opentdb.com/api.php?amount=50&type=multiple"
-    response = requests.get(DB_API_URL)
-    data = response.json()
+    data = requests.get(DB_API_URL).json()
     questions = data.get("results", [])
     if not questions:
-        return await interaction.followup.send("Couldn't fetch any questions right now.")
+        return await interaction.response.send_message("Couldn't fetch any questions right now.")
 
     q = random.choice(questions)
     question_text = html.unescape(q["question"])
     correct = html.unescape(q["correct_answer"])
-    wrongs = [html.unescape(ans) for ans in q["incorrect_answers"]]
-
-    options = wrongs + [correct]
+    options = [html.unescape(a) for a in q["incorrect_answers"]] + [correct]
     random.shuffle(options)
 
     embed = discord.Embed(
@@ -173,7 +169,7 @@ async def trivia_slash(interaction: discord.Interaction):
 
     embed.set_footer(text="Reply with /answer <number> to lock in your guess!")
 
-    await interaction.followup.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 
 # Slash command to ask OpenAI a question
