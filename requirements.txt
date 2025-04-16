@@ -7,3 +7,5 @@ dotenv
 requests
 openai
 pyspellchecker
+json
+html
