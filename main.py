@@ -16,6 +16,7 @@ from spellchecker import SpellChecker
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 load_dotenv()
 
@@ -180,6 +181,7 @@ async def on_message(message):
 
     misspelled = spell.unknown(word_list)
     if misspelled:
+        logging.debug(f"Misspelled words detected: {', '.join(misspelled)}")
         number = random.randint(1, 10)
         if number == 1:
             response = "Let's try that again, shall we?"
