@@ -223,7 +223,12 @@ if __name__ == "__main__":
     from threading import Thread
 
     def run_flask():
-        app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+        app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 5000)),
+        debug=False,         # or rely on FLASK_DEBUG env var
+        use_reloader=False   # disable the reloader so you don’t hit signal-in-thread errors
+    )
 
     Thread(target=run_flask).start()
 
