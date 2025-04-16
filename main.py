@@ -1,4 +1,4 @@
-import Discord
+import discord
 import html
 import spotipy
 import requests
