@@ -14,6 +14,7 @@ from flask import Flask
 from discord.ext import commands
 from discord import app_commands
 from spellchecker import SpellChecker
+from discord.ui import View, Button  # ← for trivia buttons
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -21,12 +22,12 @@ logging.basicConfig(level=logging.DEBUG)
 
 load_dotenv()
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN")
+SPOTIFY_CLIENT_ID    = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET= os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = "http://localhost:8888/callback"
-SPOTIFY_PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SPOTIFY_PLAYLIST_ID  = os.getenv("SPOTIFY_PLAYLIST_ID")
+OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY")
 
 if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLAYLIST_ID, OPENAI_API_KEY]):
     logging.error("Missing one or more required environment variables!")
@@ -38,7 +39,7 @@ app = Flask(__name__)
 def home():
     return "Discord Bot is Running!"
 
-# Set up Spotify authentication
+# Spotify setup
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     client_id=SPOTIFY_CLIENT_ID,
     client_secret=SPOTIFY_CLIENT_SECRET,
@@ -46,117 +47,133 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     scope="playlist-modify-public"
 ))
 
-# Set up Discord bot with command handler
+# Discord bot setup
 intents = discord.Intents.default()
 intents.messages = True
-intents.message_content = True  # Ensure message content is enabled
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Regular expression to match Spotify song links
 SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
+client_credentials_manager = SpotifyClientCredentials(
+    client_id=SPOTIFY_CLIENT_ID,
+    client_secret=SPOTIFY_CLIENT_SECRET
+)
 
-# Authenticate with the Spotify API using Client Credentials
-client_credentials_manager = SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET)
+# —————— TRIVIA VIEW ——————
+class TriviaView(View):
+    def __init__(self, user_id: int, options: list[str], correct: str):
+        super().__init__(timeout=30)
+        self.user_id = user_id
+        self.correct = correct
 
-# Slash command to add a song to the playlist
+        for idx, text in enumerate(options, start=1):
+            btn = Button(label=str(idx), style=discord.ButtonStyle.primary, custom_id=str(idx))
+
+            async def callback(interaction: discord.Interaction, idx=idx):
+                if interaction.user.id != self.user_id:
+                    return await interaction.response.send_message(
+                        "This isn't your question!", ephemeral=True
+                    )
+
+                # lock buttons
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
+
+                picked = options[idx-1]
+                if picked == self.correct:
+                    await interaction.response.send_message("🎉 Correct!", ephemeral=True)
+                else:
+                    await interaction.response.send_message(
+                        f"❌ Nope—correct was **{self.correct}**.", ephemeral=True
+                    )
+                self.stop()
+
+            btn.callback = callback
+            self.add_item(btn)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        # disable on timeout
+        try:
+            await self.message.edit(view=self)
+        except Exception:
+            pass
+
+# —————— SLASH COMMANDS ——————
+
 @bot.tree.command(name="add", description="Add a song to the playlist using a URL or search query.")
 @app_commands.describe(track="Spotify link or search query for a song.")
 async def add_song(interaction: discord.Interaction, track: str):
-    await interaction.response.defer()  # prevent timeout
-
-    # Check if it's a Spotify URL
+    await interaction.response.defer()
     match = re.search(SPOTIFY_URL_REGEX, track)
     if match:
-        track_id = match.group(1)
+        track_id  = match.group(1)
         track_uri = f"spotify:track:{track_id}"
     else:
-        # Try searching for the track
         result = search_song(track)
         if not result:
-            await interaction.followup.send("Couldn't find a track with that name.")
-            return
+            return await interaction.followup.send("Couldn't find a track with that name.")
         track_uri = result["uri"]
-        track_id = result["id"]
+        track_id  = result["id"]
 
-    # Duplicate-check: verify if the track is already in the playlist
-    existing_tracks = sp.playlist_tracks(SPOTIFY_PLAYLIST_ID)
-    if any(item['track']['id'] == track_id for item in existing_tracks['items']):
-        await interaction.followup.send("That track is already in the playlist! ✅")
-        return
+    existing = sp.playlist_tracks(SPOTIFY_PLAYLIST_ID)
+    if any(item['track']['id'] == track_id for item in existing['items']):
+        return await interaction.followup.send("That track is already in the playlist! ✅")
 
     try:
         sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [track_uri])
-        track_info = sp.track(track_id)
-        track_name = track_info['name']
-        artist_name = track_info['artists'][0]['name']
-        await interaction.followup.send(f"Added **{track_name}** by **{artist_name}** to the playlist! 🎶")
-    except spotipy.exceptions.SpotifyException as e:
-        logging.error(f"Spotify error: {e}")
-        await interaction.followup.send(f"Spotify error: {str(e)}")
+        info = sp.track(track_id)
+        await interaction.followup.send(
+            f"Added **{info['name']}** by **{info['artists'][0]['name']}** to the playlist! 🎶"
+        )
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
-        await interaction.followup.send(f"Failed to add song: {str(e)}")
+        logging.error(f"Spotify error: {e}")
+        await interaction.followup.send(f"Failed to add song: {e}")
 
-# Helper function to search for a song by query
-def search_song(query):
-    results = sp.search(q=query, type='track')
-    if results['tracks']['items']:
-        return results['tracks']['items'][0]
-    else:
-        return None
-
-# Slash command to get a random fact
 @bot.tree.command(name="fact", description="Get a random fact.")
 async def fact_slash(interaction: discord.Interaction):
     fact = randfacts.get_fact()
     await interaction.response.send_message(f"Did you know? {fact}")
 
-# Slash command for Terraria Wiki search
 @bot.tree.command(name="wiki", description="Search the Terraria Wiki for an entity page.")
 async def wiki_slash(interaction: discord.Interaction, query: str):
-    base_url = "https://terraria.wiki.gg/wiki/"
-    query = query.replace(" ", "_")
-    wiki_url = f"{base_url}{query}"
-
-    response = requests.get(wiki_url)
-    if response.status_code == 200:
-        await interaction.response.send_message(f"Here's the Terraria Wiki page for **{query}**: {wiki_url}")
+    url = f"https://terraria.wiki.gg/wiki/{query.replace(' ','_')}"
+    resp = requests.get(url)
+    if resp.status_code == 200:
+        await interaction.response.send_message(f"Here's the page: {url}")
     else:
-        await interaction.response.send_message(f"Sorry, {query} doesn't seem to exist. Maybe check your spelling, or try a different entity.")
+        await interaction.response.send_message(f"No page found for **{query}**.")
 
-# Slash command for ping
 @bot.tree.command(name="ping", description="Check the bot's latency.")
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message("pong")
 
-# Slash command to generate a random number
 @bot.tree.command(name="number", description="Generate a random number between two values.")
 async def number_slash(interaction: discord.Interaction, min_num: int, max_num: int):
     if min_num > max_num:
-        await interaction.response.send_message("Invalid range! The first number should be smaller than the second.", ephemeral=True)
-        return
+        return await interaction.response.send_message(
+            "Invalid range! First number must be ≤ second.", ephemeral=True
+        )
+    await interaction.response.send_message(f"Here is your number: {random.randint(min_num, max_num)}")
 
-    random_number = random.randint(min_num, max_num)
-    await interaction.response.send_message(f"Here is your number: {random_number}")
-
-# Slash command to flip a coin
 @bot.tree.command(name="coin", description="Flip a coin.")
 async def coin_slash(interaction: discord.Interaction):
-    result = "Heads" if random.randint(1, 2) == 1 else "Tails"
-    await interaction.response.send_message(f"It was {result}!")
+    await interaction.response.send_message("Heads" if random.randint(0,1)==0 else "Tails")
 
 @bot.tree.command(name="trivia", description="Get a random trivia question.")
 async def trivia_slash(interaction: discord.Interaction):
-    DB_API_URL = "https://opentdb.com/api.php?amount=50&type=multiple"
-    data = requests.get(DB_API_URL).json()
-    questions = data.get("results", [])
-    if not questions:
-        return await interaction.response.send_message("Couldn't fetch any questions right now.")
+    # fetch 50 multiple-choice questions
+    data = requests.get("https://opentdb.com/api.php?amount=50&type=multiple").json()
+    qs = data.get("results", [])
+    if not qs:
+        return await interaction.response.send_message("Couldn't fetch questions right now.")
 
-    q = random.choice(questions)
+    q = random.choice(qs)
     question_text = html.unescape(q["question"])
-    correct = html.unescape(q["correct_answer"])
-    options = [html.unescape(a) for a in q["incorrect_answers"]] + [correct]
+    correct      = html.unescape(q["correct_answer"])
+    options      = [html.unescape(a) for a in q["incorrect_answers"]] + [correct]
     random.shuffle(options)
 
     embed = discord.Embed(
@@ -164,103 +181,76 @@ async def trivia_slash(interaction: discord.Interaction):
         description=question_text,
         color=discord.Color.blurple()
     )
-    for idx, opt in enumerate(options, start=1):
-        embed.add_field(name=f"Option {idx}", value=opt, inline=False)
+    for i, opt in enumerate(options, start=1):
+        embed.add_field(name=f"Option {i}", value=opt, inline=False)
 
-    embed.set_footer(text="Reply with /answer <number> to lock in your guess!")
+    view = TriviaView(interaction.user.id, options, correct)
+    await interaction.response.send_message(embed=embed, view=view)
+    view.message = await interaction.original_response()
 
-    await interaction.response.send_message(embed=embed)
-
-
-# Slash command to ask OpenAI a question
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
 async def ask_slash(interaction: discord.Interaction, question: str):
-    await interaction.response.defer()  # Prevent timeout
+    await interaction.response.defer()
     try:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp   = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": question}],
+            messages=[{"role":"user","content":question}],
             max_tokens=50
         )
-        ai_reply = response.choices[0].message.content
-        await interaction.followup.send(ai_reply)
+        await interaction.followup.send(resp.choices[0].message.content)
     except Exception as e:
-        logging.error(f"Error with OpenAI API: {e}")
-        await interaction.followup.send("Sorry, I couldn't process that request.")
+        logging.error(f"OpenAI error: {e}")
+        await interaction.followup.send("Sorry, couldn't process that request.")
 
-import os
+def search_song(query: str):
+    results = sp.search(q=query, type='track')
+    return results['tracks']['items'][0] if results['tracks']['items'] else None
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    sentence = message.content.strip()
-    if not sentence:
-        return 
-
-    word_list = re.findall(r"[\w']+", sentence)
+    words = re.findall(r"[\w']+", message.content)
     spell = SpellChecker()
+    spell.word_frequency.load_text_file(os.path.join(os.path.dirname(__file__), "addedwords.txt"))
+    miss  = spell.unknown(words)
+    if miss:
+        logging.debug(f"Misspelled words detected: {', '.join(miss)}")
+        replies = [
+            "Let's try that again, shall we?",
+            "Great spelling, numb-nuts!",
+            "Learn to spell, Sandwich.",
+            "Learn English, Torta.",
+            "Read a book, Schmuck!",
+            "Seems like your dictionary took a vacation, pal!",
+            "Even your keyboard is questioning your grammar, genius.",
+            "Autocorrect just waved the white flag, rookie.",
+            "Are you inventing a new language? Because that’s something else!",
+            "Spell check is tapping out—maybe it's time for a lesson!"
+        ]
+        await message.channel.send(random.choice(replies))
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "addedwords.txt")
-    spell.word_frequency.load_text_file(file_path)
-
-    misspelled = spell.unknown(word_list)
-    if misspelled:
-        logging.debug(f"Misspelled words detected: {', '.join(misspelled)}")
-        number = random.randint(1, 10)
-        if number == 1:
-            response = "Let's try that again, shall we?"
-        elif number == 2:
-            response = "Great spelling, numb-nuts!"
-        elif number == 3:
-            response = "Learn to spell, Sandwich."
-        elif number == 4:
-            response = "Learn English, Torta."
-        elif number == 5:
-            response = "Read a book, Schmuck!"
-        elif number == 6:
-            response = "Seems like your dictionary took a vacation, pal!"
-        elif number == 7:
-            response = "Even your keyboard is questioning your grammar, genius."
-        elif number == 8:
-            response = "Autocorrect just waved the white flag, rookie."
-        elif number == 9:
-            response = "Are you inventing a new language? Because that’s something else!"
-        elif number == 10:
-            response = "Spell check is tapping out—maybe it's time for a lesson!"
-
-        await message.channel.send(response)
-    else:
-        return
-
-# Sync commands and log in
 @bot.event
 async def on_ready():
     logging.info(f'Logged in as {bot.user}')
     try:
-        await bot.tree.sync()  # Sync slash commands
+        await bot.tree.sync()
         logging.info("Slash commands synced.")
     except Exception as e:
         logging.error(f"Error syncing commands: {e}")
 
-# Run bot and Flask together
 if __name__ == "__main__":
     from threading import Thread
 
     def run_flask():
         app.run(
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", 5000)),
-        debug=False,         # or rely on FLASK_DEBUG env var
-        use_reloader=False   # disable the reloader so you don’t hit signal-in-thread errors
-    )
+            host="0.0.0.0",
+            port=int(os.getenv("PORT", 5000)),
+            debug=False,
+            use_reloader=False
+        )
 
     Thread(target=run_flask).start()
-
-    try:
-        bot.run(DISCORD_TOKEN)
-    except Exception as e:
-        logging.error(f"Bot crashed with error: {e}")
+    bot.run(DISCORD_TOKEN)
