@@ -162,31 +162,48 @@ async def number_slash(interaction: discord.Interaction, min_num: int, max_num: 
 async def coin_slash(interaction: discord.Interaction):
     await interaction.response.send_message("Heads" if random.randint(0,1)==0 else "Tails")
 
-@bot.tree.command(name="trivia", description="Get a random trivia question.")
-async def trivia_slash(interaction: discord.Interaction):
-    # fetch 50 multiple-choice questions
-    data = requests.get("https://opentdb.com/api.php?amount=50&type=multiple").json()
-    qs = data.get("results", [])
-    if not qs:
-        return await interaction.response.send_message("Couldn't fetch questions right now.")
+# —————— TRIVIA VIEW ——————
+class TriviaView(View):
+    def __init__(self, user_id: int, options: list[str], correct: str):
+        super().__init__(timeout=30)
+        self.user_id = user_id
+        self.correct = correct
 
-    q = random.choice(qs)
-    question_text = html.unescape(q["question"])
-    correct      = html.unescape(q["correct_answer"])
-    options      = [html.unescape(a) for a in q["incorrect_answers"]] + [correct]
-    random.shuffle(options)
+        for idx, text in enumerate(options, start=1):
+            btn = Button(label=str(idx), style=discord.ButtonStyle.primary, custom_id=str(idx))
 
-    embed = discord.Embed(
-        title="🎲 Trivia Time!",
-        description=question_text,
-        color=discord.Color.blurple()
-    )
-    for i, opt in enumerate(options, start=1):
-        embed.add_field(name=f"Option {i}", value=opt, inline=False)
+            async def callback(interaction: discord.Interaction, idx=idx):
+                if interaction.user.id != self.user_id:
+                    return await interaction.response.send_message(
+                        "This isn't your question!", ephemeral=True
+                    )
 
-    view = TriviaView(interaction.user.id, options, correct)
-    await interaction.response.send_message(embed=embed, view=view)
-    view.message = await interaction.original_response()
+                # lock buttons
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
+
+                picked = options[idx-1]
+                if picked == self.correct:
+                    # now visible to everyone
+                    await interaction.response.send_message("🎉 Correct!")
+                else:
+                    # now visible to everyone
+                    await interaction.response.send_message(
+                        f"❌ Nope—correct was **{self.correct}**."
+                    )
+                self.stop()
+
+            btn.callback = callback
+            self.add_item(btn)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except Exception:
+            pass
 
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
 async def ask_slash(interaction: discord.Interaction, question: str):
