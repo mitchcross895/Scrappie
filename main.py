@@ -20,13 +20,12 @@ from threading import Thread
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 
 load_dotenv()
-
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+DISCORD_TOKEN       = os.getenv("DISCORD_TOKEN")
+SPOTIFY_CLIENT_ID   = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_REDIRECT_URI = "http://localhost:8888/callback"
-SPOTIFY_PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SPOTIFY_REDIRECT_URI  = "http://localhost:8888/callback"
+SPOTIFY_PLAYLIST_ID   = os.getenv("SPOTIFY_PLAYLIST_ID")
+OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY")
 
 if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLAYLIST_ID, OPENAI_API_KEY]):
     logging.error("Missing one or more required environment variables!")
@@ -38,7 +37,9 @@ def home():
     return "Discord Bot is Running!"
 
 SPELL = SpellChecker()
-SPELL.word_frequency.load_text_file(os.path.join(os.path.dirname(__file__), "addedwords.txt"))
+SPELL.word_frequency.load_text_file(
+    os.path.join(os.path.dirname(__file__), "addedwords.txt")
+)
 MISSPELL_REPLIES = [
     "Let's try that again, shall we?",
     "Great spelling, numb-nuts!",
@@ -79,15 +80,21 @@ class TriviaView(View):
             btn = Button(label=str(idx), style=discord.ButtonStyle.primary, custom_id=str(idx))
             async def callback(interaction: discord.Interaction, idx=idx):
                 if interaction.user.id != self.user_id:
-                    return await interaction.response.send_message("This isn't your question!", ephemeral=True)
+                    return await interaction.response.send_message(
+                        "This isn't your question!", ephemeral=True
+                    )
+                # disable all buttons
                 for child in self.children:
                     child.disabled = True
                 await interaction.message.edit(view=self)
+
                 picked = options[idx-1]
                 if picked == self.correct:
                     await interaction.response.send_message("🎉 Correct!", ephemeral=True)
                 else:
-                    await interaction.response.send_message(f"❌ Nope—correct was **{self.correct}**.", ephemeral=True)
+                    await interaction.response.send_message(
+                        f"❌ Nope—correct was **{self.correct}**.", ephemeral=True
+                    )
                 self.stop()
             btn.callback = callback
             self.add_item(btn)
@@ -105,17 +112,19 @@ async def add_song(interaction: discord.Interaction, track: str):
     await interaction.response.defer()
     match = re.search(SPOTIFY_URL_REGEX, track)
     if match:
-        track_id = match.group(1)
+        track_id  = match.group(1)
         track_uri = f"spotify:track:{track_id}"
     else:
         result = search_song(track)
         if not result:
             return await interaction.followup.send("Couldn't find a track with that name.")
         track_uri = result["uri"]
-        track_id = result["id"]
+        track_id  = result["id"]
+
     existing = sp.playlist_tracks(SPOTIFY_PLAYLIST_ID)
     if any(item['track']['id'] == track_id for item in existing['items']):
         return await interaction.followup.send("That track is already in the playlist! ✅")
+
     try:
         sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [track_uri])
         info = sp.track(track_id)
@@ -149,18 +158,44 @@ async def number_slash(interaction: discord.Interaction, min_num: int, max_num: 
         return await interaction.response.send_message(
             "Invalid range! First number must be ≤ second.", ephemeral=True
         )
-    await interaction.response.send_message(f"Here is your number: {random.randint(min_num, max_num)}")
+    await interaction.response.send_message(
+        f"Here is your number: {random.randint(min_num, max_num)}"
+    )
 
 @bot.tree.command(name="coin", description="Flip a coin.")
 async def coin_slash(interaction: discord.Interaction):
     await interaction.response.send_message("Heads" if random.randint(0,1)==0 else "Tails")
+
+@bot.tree.command(name="trivia", description="Answer a multiple choice trivia question.")
+async def trivia_slash(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        res = requests.get("https://opentdb.com/api.php?amount=1&type=multiple")
+        data = res.json()
+        result = data["results"][0]
+        question = html.unescape(result["question"])
+        correct  = html.unescape(result["correct_answer"])
+        incorrect = [html.unescape(ans) for ans in result["incorrect_answers"]]
+        options = incorrect + [correct]
+        random.shuffle(options)
+
+        view = TriviaView(interaction.user.id, options, correct)
+        embed = discord.Embed(title="Trivia Time!", description=question)
+        for idx, opt in enumerate(options, start=1):
+            embed.add_field(name=f"{idx}.", value=opt, inline=False)
+
+        msg = await interaction.followup.send(embed=embed, view=view)
+        view.message = msg
+    except Exception as e:
+        logging.error(f"Trivia error: {e}")
+        await interaction.followup.send("Sorry, couldn't fetch a trivia question right now.")
 
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
 async def ask_slash(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
-        resp = client.chat.completions.create(
+        resp   = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role":"user","content":question}],
             max_tokens=50
