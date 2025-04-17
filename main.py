@@ -17,12 +17,10 @@ import randfacts
 from dotenv import load_dotenv
 from threading import Thread
 
-# —————— CONFIGURE LOGGING ——————
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 
 load_dotenv()
 
-# —————— ENVIRONMENT VARIABLES ——————
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
@@ -34,13 +32,11 @@ if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLA
     logging.error("Missing one or more required environment variables!")
     exit(1)
 
-# —————— FLASK APP (FOR UPTIME) ——————
 app = Flask(__name__)
 @app.route('/')
 def home():
     return "Discord Bot is Running!"
 
-# —————— SPELLCHECKER SETUP ——————
 SPELL = SpellChecker()
 SPELL.word_frequency.load_text_file(os.path.join(os.path.dirname(__file__), "addedwords.txt"))
 MISSPELL_REPLIES = [
@@ -56,7 +52,6 @@ MISSPELL_REPLIES = [
     "Spell check is tapping out—maybe it's time for a lesson!"
 ]
 
-# —————— SPOTIFY SETUP ——————
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     client_id=SPOTIFY_CLIENT_ID,
     client_secret=SPOTIFY_CLIENT_SECRET,
@@ -70,13 +65,11 @@ client_credentials_manager = SpotifyClientCredentials(
 )
 SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
 
-# —————— DISCORD BOT SETUP ——————
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# —————— TRIVIA VIEW ——————
 class TriviaView(View):
     def __init__(self, user_id: int, options: list[str], correct: str):
         super().__init__(timeout=30)
@@ -106,7 +99,6 @@ class TriviaView(View):
         except Exception:
             pass
 
-# —————— SLASH COMMANDS ——————
 @bot.tree.command(name="add", description="Add a song to the playlist using a URL or search query.")
 @app_commands.describe(track="Spotify link or search query for a song.")
 async def add_song(interaction: discord.Interaction, track: str):
@@ -178,12 +170,10 @@ async def ask_slash(interaction: discord.Interaction, question: str):
         logging.error(f"OpenAI error: {e}")
         await interaction.followup.send("Sorry, couldn't process that request.")
 
-# —————— HELPER FUNCTIONS ——————
 def search_song(query: str):
     results = sp.search(q=query, type='track')
     return results['tracks']['items'][0] if results['tracks']['items'] else None
 
-# —————— EVENTS ——————
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -204,7 +194,6 @@ async def on_ready():
     except Exception as e:
         logging.error(f"Error syncing commands: {e}")
 
-# —————— RUN ——————
 if __name__ == "__main__":
     Thread(target=lambda: app.run(
         host="0.0.0.0",
