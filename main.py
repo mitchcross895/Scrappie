@@ -14,7 +14,7 @@ from flask import Flask
 from discord.ext import commands
 from discord import app_commands
 from spellchecker import SpellChecker
-from discord.ui import View, Button  # ← for trivia buttons
+from discord.ui import View, Button 
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
