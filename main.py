@@ -20,12 +20,12 @@ from threading import Thread
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 
 load_dotenv()
-DISCORD_TOKEN       = os.getenv("DISCORD_TOKEN")
-SPOTIFY_CLIENT_ID   = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_REDIRECT_URI  = "http://localhost:8888/callback"
-SPOTIFY_PLAYLIST_ID   = os.getenv("SPOTIFY_PLAYLIST_ID")
-OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY")
+DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN")
+SPOTIFY_CLIENT_ID    = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET= os.getenv("SPOTIFY_CLIENT_SECRET")
+SPOTIFY_REDIRECT_URI = "http://localhost:8888/callback"
+SPOTIFY_PLAYLIST_ID  = os.getenv("SPOTIFY_PLAYLIST_ID")
+OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY")
 
 if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLAYLIST_ID, OPENAI_API_KEY]):
     logging.error("Missing one or more required environment variables!")
@@ -83,17 +83,16 @@ class TriviaView(View):
                     return await interaction.response.send_message(
                         "This isn't your question!", ephemeral=True
                     )
-                # disable all buttons
                 for child in self.children:
                     child.disabled = True
                 await interaction.message.edit(view=self)
 
                 picked = options[idx-1]
                 if picked == self.correct:
-                    await interaction.response.send_message("🎉 Correct!", ephemeral=True)
+                    await interaction.response.send_message("🎉 Correct!")
                 else:
                     await interaction.response.send_message(
-                        f"❌ Nope—correct was **{self.correct}**.", ephemeral=True
+                        f"❌ {interaction.user.mention} answered **{picked}**, but the correct was **{self.correct}**."
                     )
                 self.stop()
             btn.callback = callback
@@ -158,9 +157,7 @@ async def number_slash(interaction: discord.Interaction, min_num: int, max_num: 
         return await interaction.response.send_message(
             "Invalid range! First number must be ≤ second.", ephemeral=True
         )
-    await interaction.response.send_message(
-        f"Here is your number: {random.randint(min_num, max_num)}"
-    )
+    await interaction.response.send_message(f"Here is your number: {random.randint(min_num, max_num)}")
 
 @bot.tree.command(name="coin", description="Flip a coin.")
 async def coin_slash(interaction: discord.Interaction):
@@ -175,16 +172,15 @@ async def trivia_slash(interaction: discord.Interaction):
         result = data["results"][0]
         question = html.unescape(result["question"])
         correct  = html.unescape(result["correct_answer"])
-        incorrect = [html.unescape(ans) for ans in result["incorrect_answers"]]
-        options = incorrect + [correct]
+        incorrect= [html.unescape(ans) for ans in result["incorrect_answers"]]
+        options  = incorrect + [correct]
         random.shuffle(options)
 
         view = TriviaView(interaction.user.id, options, correct)
-        embed = discord.Embed(title="Trivia Time!", description=question)
+        embed= discord.Embed(title="Trivia Time!", description=question)
         for idx, opt in enumerate(options, start=1):
             embed.add_field(name=f"{idx}.", value=opt, inline=False)
-
-        msg = await interaction.followup.send(embed=embed, view=view)
+        msg= await interaction.followup.send(embed=embed, view=view)
         view.message = msg
     except Exception as e:
         logging.error(f"Trivia error: {e}")
@@ -194,8 +190,8 @@ async def trivia_slash(interaction: discord.Interaction):
 async def ask_slash(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        resp   = client.chat.completions.create(
+        client= OpenAI(api_key=OPENAI_API_KEY)
+        resp  = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role":"user","content":question}],
             max_tokens=50
@@ -206,14 +202,14 @@ async def ask_slash(interaction: discord.Interaction, question: str):
         await interaction.followup.send("Sorry, couldn't process that request.")
 
 def search_song(query: str):
-    results = sp.search(q=query, type='track')
+    results= sp.search(q=query, type='track')
     return results['tracks']['items'][0] if results['tracks']['items'] else None
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
-    words = re.findall(r"[\w']+", message.content)
+    words= re.findall(r"[\w']+", message.content)
     miss = SPELL.unknown(words)
     if miss:
         logging.debug(f"Misspelled words detected: {miss}")
