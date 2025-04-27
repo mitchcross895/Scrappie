@@ -5,9 +5,10 @@ import random
 import html
 import requests
 import discord
+import aiohttp
 from discord import app_commands
 from discord.ext import commands
-from discord.ui import View, Button
+from discord.ui import View, Button, Select
 from flask import Flask
 from openai import OpenAI
 import spotipy
@@ -49,7 +50,7 @@ MISSPELL_REPLIES = [
     "Seems like your dictionary took a vacation, pal!",
     "Even your keyboard is questioning your grammar, genius.",
     "Autocorrect just waved the white flag, rookie.",
-    "Are you inventing a new language? Because that’s something else!",
+    "Are you inventing a new language? Because that's something else!",
     "Spell check is tapping out—maybe it's time for a lesson!"
 ]
 
@@ -72,38 +73,245 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 class TriviaView(View):
-    def __init__(self, user_id: int, options: list[str], correct: str):
+    def __init__(self, user_id: int, options: list[str], correct: str, category: str, difficulty: str):
         super().__init__(timeout=30)
         self.user_id = user_id
         self.correct = correct
+        self.options = options
+        self.message = None
+        self.category = category
+        self.difficulty = difficulty
+        
         for idx, text in enumerate(options, start=1):
             btn = Button(label=str(idx), style=discord.ButtonStyle.primary, custom_id=str(idx))
-            async def callback(interaction: discord.Interaction, idx=idx):
-                if interaction.user.id != self.user_id:
-                    return await interaction.response.send_message(
-                        "This isn't your question!", ephemeral=True
-                    )
-                for child in self.children:
-                    child.disabled = True
-                await interaction.message.edit(view=self)
-
-                picked = options[idx-1]
-                if picked == self.correct:
-                    await interaction.response.send_message("🎉 Correct!")
-                else:
-                    await interaction.response.send_message(
-                        f"❌ {interaction.user.mention} answered **{picked}**, but the correct was **{self.correct}**."
-                    )
-                self.stop()
-            btn.callback = callback
+            btn.callback = self.create_callback(idx, text)
             self.add_item(btn)
+    
+    def create_callback(self, idx: int, option: str):
+        """Create a callback for a button to avoid closure issues"""
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                return await interaction.response.send_message(
+                    "This isn't your question! Start your own trivia with /trivia", 
+                    ephemeral=True
+                )
+            
+            for child in self.children:
+                child.disabled = True
+                if self.options[int(child.custom_id)-1] == self.correct:
+                    child.style = discord.ButtonStyle.success
+                elif child.custom_id == str(idx):
+                    child.style = discord.ButtonStyle.danger
+            
+            await interaction.message.edit(view=self)
+            
+            if option == self.correct:
+                embed = discord.Embed(
+                    title="🎉 Correct!", 
+                    description=f"Well done, {interaction.user.mention}!",
+                    color=discord.Color.green()
+                )
+            else:
+                embed = discord.Embed(
+                    title="❌ Incorrect",
+                    description=f"{interaction.user.mention} answered **{option}**, but the correct answer was **{self.correct}**.",
+                    color=discord.Color.red()
+                )
+            
+            embed.add_field(name="Difficulty", value=self.difficulty.capitalize())
+            embed.add_field(name="Category", value=self.category)
+            
+            await interaction.response.send_message(embed=embed)
+            self.stop()
+        
+        return callback
+    
+    async def on_timeout(self):
+        if self.message is None:
+            return
+            
+        for child in self.children:
+            child.disabled = True
+            if self.options[int(child.custom_id)-1] == self.correct:
+                child.style = discord.ButtonStyle.success
+        
+        embed = self.message.embeds[0]
+        embed.title = "⏰ Trivia Expired"
+        embed.color = discord.Color.dark_gray()
+        
+        try:
+            await self.message.edit(embed=embed, view=self)
+            await self.message.reply(f"Time's up! The correct answer was **{self.correct}**.")
+        except Exception as e:
+            logging.error(f"Error updating expired trivia: {e}")
+
+
+class TriviaCategorySelect(discord.ui.Select):
+    def __init__(self, categories):
+        options = [
+            discord.SelectOption(label="Random", description="Any category", value="0")
+        ]
+        
+        for category in categories[:24]:  
+            cat_id = str(category["id"])
+            cat_name = category["name"]
+            options.append(discord.SelectOption(label=cat_name, value=cat_id))
+            
+        super().__init__(
+            placeholder="Select a category...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+
+class TriviaDifficultySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Random", description="Any difficulty", value="any"),
+            discord.SelectOption(label="Easy", description="Simple questions", value="easy"),
+            discord.SelectOption(label="Medium", description="Moderate difficulty", value="medium"),
+            discord.SelectOption(label="Hard", description="Challenging questions", value="hard")
+        ]
+        
+        super().__init__(
+            placeholder="Select difficulty...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+
+class TriviaSetupView(View):
+    def __init__(self, interaction: discord.Interaction, categories):
+        super().__init__(timeout=60)
+        self.interaction = interaction
+        self.category = "0"  
+        self.difficulty = "any"  
+        
+        
+        self.category_select = TriviaCategorySelect(categories)
+        self.category_select.callback = self.category_callback
+        self.add_item(self.category_select)
+        
+        
+        self.difficulty_select = TriviaDifficultySelect()
+        self.difficulty_select.callback = self.difficulty_callback
+        self.add_item(self.difficulty_select)
+        
+        
+        self.start_button = Button(label="Start Trivia", style=discord.ButtonStyle.success)
+        self.start_button.callback = self.start_callback
+        self.add_item(self.start_button)
+    
+    async def category_callback(self, interaction: discord.Interaction):
+        self.category = self.category_select.values[0]
+        await interaction.response.defer()
+    
+    async def difficulty_callback(self, interaction: discord.Interaction):
+        self.difficulty = self.difficulty_select.values[0]
+        await interaction.response.defer()
+    
+    async def start_callback(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        
+        
+        await fetch_and_display_trivia(
+            interaction, 
+            category_id=self.category, 
+            difficulty=self.difficulty
+        )
+    
     async def on_timeout(self):
         for child in self.children:
             child.disabled = True
         try:
-            await self.message.edit(view=self)
+            await self.interaction.edit_original_response(view=self)
         except Exception:
             pass
+
+
+async def fetch_categories():
+    """Fetch available trivia categories from the API"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://opentdb.com/api_category.php") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get("trivia_categories", [])
+    except Exception as e:
+        logging.error(f"Failed to fetch trivia categories: {e}")
+    
+    return [
+        {"id": 9, "name": "General Knowledge"},
+        {"id": 21, "name": "Sports"},
+        {"id": 22, "name": "Geography"},
+        {"id": 23, "name": "History"}
+    ]
+
+
+async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any"):
+    """Fetch and display a trivia question with the given parameters"""
+    url = "https://opentdb.com/api.php?amount=1&type=multiple"
+    if category_id != "0":
+        url += f"&category={category_id}"
+    if difficulty != "any":
+        url += f"&difficulty={difficulty}"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return await interaction.followup.send(
+                        "Sorry, the trivia service is unavailable right now. Please try again later."
+                    )
+                
+                data = await response.json()
+                if data["response_code"] != 0 or not data["results"]:
+                    return await interaction.followup.send(
+                        "No trivia questions found with those parameters. Try different options!"
+                    )
+                
+                result = data["results"][0]
+                question = html.unescape(result["question"])
+                correct = html.unescape(result["correct_answer"])
+                incorrect = [html.unescape(ans) for ans in result["incorrect_answers"]]
+                category = result["category"]
+                difficulty = result["difficulty"]
+                
+                options = incorrect + [correct]
+                random.shuffle(options)
+                
+                view = TriviaView(
+                    interaction.user.id,
+                    options,
+                    correct,
+                    category,
+                    difficulty
+                )
+                
+                embed = discord.Embed(
+                    title=f"Trivia Time! ({difficulty.capitalize()})",
+                    description=question,
+                    color=discord.Color.blue()
+                )
+                embed.set_author(name=category)
+                embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+                
+                for idx, opt in enumerate(options, start=1):
+                    embed.add_field(name=f"{idx}.", value=opt, inline=False)
+                
+                msg = await interaction.followup.send(embed=embed, view=view)
+                view.message = msg
+                
+    except Exception as e:
+        logging.error(f"Trivia error: {e}")
+        await interaction.followup.send(
+            "Sorry, something went wrong while fetching your trivia question. Please try again."
+        )
+
 
 @bot.tree.command(name="add", description="Add a song to the playlist using a URL or search query.")
 @app_commands.describe(track="Spotify link or search query for a song.")
@@ -166,25 +374,18 @@ async def coin_slash(interaction: discord.Interaction):
 @bot.tree.command(name="trivia", description="Answer a multiple choice trivia question.")
 async def trivia_slash(interaction: discord.Interaction):
     await interaction.response.defer()
-    try:
-        res = requests.get("https://opentdb.com/api.php?amount=1&type=multiple")
-        data = res.json()
-        result = data["results"][0]
-        question = html.unescape(result["question"])
-        correct  = html.unescape(result["correct_answer"])
-        incorrect= [html.unescape(ans) for ans in result["incorrect_answers"]]
-        options  = incorrect + [correct]
-        random.shuffle(options)
-
-        view = TriviaView(interaction.user.id, options, correct)
-        embed= discord.Embed(title="Trivia Time!", description=question)
-        for idx, opt in enumerate(options, start=1):
-            embed.add_field(name=f"{idx}.", value=opt, inline=False)
-        msg= await interaction.followup.send(embed=embed, view=view)
-        view.message = msg
-    except Exception as e:
-        logging.error(f"Trivia error: {e}")
-        await interaction.followup.send("Sorry, couldn't fetch a trivia question right now.")
+    
+    categories = await fetch_categories()
+    
+    view = TriviaSetupView(interaction, categories)
+    
+    embed = discord.Embed(
+        title="Trivia Setup",
+        description="Choose a category and difficulty for your trivia question!",
+        color=discord.Color.blue()
+    )
+    
+    await interaction.followup.send(embed=embed, view=view)
 
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
 async def ask_slash(interaction: discord.Interaction, question: str):
@@ -209,7 +410,7 @@ def search_song(query: str):
 async def on_message(message):
     if message.author.bot:
         return
-    words= re.findall(r"[\w']+", message.content)
+    words= re.findall(r"[\w']+", message.content) 
     miss = SPELL.unknown(words)
     if miss:
         logging.debug(f"Misspelled words detected: {miss}")
