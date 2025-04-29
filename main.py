@@ -19,7 +19,7 @@ from threading import Thread
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 
 load_dotenv()
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+DISCORD_TOKEN  = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not all([DISCORD_TOKEN, OPENAI_API_KEY]):
@@ -27,6 +27,7 @@ if not all([DISCORD_TOKEN, OPENAI_API_KEY]):
     exit(1)
 
 app = Flask(__name__)
+
 @app.route('/')
 def home():
     return "Discord Bot is Running!"
@@ -69,7 +70,6 @@ class TriviaView(View):
             self.add_item(btn)
     
     def create_callback(self, idx: int, option: str):
-        """Create a callback for a button to avoid closure issues"""
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.user_id:
                 return await interaction.response.send_message(
@@ -132,12 +132,8 @@ class TriviaCategorySelect(discord.ui.Select):
         options = [
             discord.SelectOption(label="Random", description="Any category", value="0")
         ]
-        
         for category in categories[:24]:  
-            cat_id = str(category["id"])
-            cat_name = category["name"]
-            options.append(discord.SelectOption(label=cat_name, value=cat_id))
-            
+            options.append(discord.SelectOption(label=category["name"], value=str(category["id"])))
         super().__init__(
             placeholder="Select a category...",
             min_values=1,
@@ -150,11 +146,10 @@ class TriviaDifficultySelect(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label="Random", description="Any difficulty", value="any"),
-            discord.SelectOption(label="Easy", description="Simple questions", value="easy"),
+            discord.SelectOption(label="Easy",   description="Simple questions",   value="easy"),
             discord.SelectOption(label="Medium", description="Moderate difficulty", value="medium"),
-            discord.SelectOption(label="Hard", description="Challenging questions", value="hard")
+            discord.SelectOption(label="Hard",   description="Challenging questions",value="hard"),
         ]
-        
         super().__init__(
             placeholder="Select difficulty...",
             min_values=1,
@@ -167,20 +162,17 @@ class TriviaSetupView(View):
     def __init__(self, interaction: discord.Interaction, categories):
         super().__init__(timeout=60)
         self.interaction = interaction
-        self.category = "0"  
-        self.difficulty = "any"  
-        
-        
+        self.category = "0"
+        self.difficulty = "any"
+
         self.category_select = TriviaCategorySelect(categories)
         self.category_select.callback = self.category_callback
         self.add_item(self.category_select)
-        
-        
+
         self.difficulty_select = TriviaDifficultySelect()
         self.difficulty_select.callback = self.difficulty_callback
         self.add_item(self.difficulty_select)
-        
-        
+
         self.start_button = Button(label="Start Trivia", style=discord.ButtonStyle.success)
         self.start_button.callback = self.start_callback
         self.add_item(self.start_button)
@@ -197,13 +189,7 @@ class TriviaSetupView(View):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(view=self)
-        
-        
-        await fetch_and_display_trivia(
-            interaction, 
-            category_id=self.category, 
-            difficulty=self.difficulty
-        )
+        await fetch_and_display_trivia(interaction, category_id=self.category, difficulty=self.difficulty)
     
     async def on_timeout(self):
         for child in self.children:
@@ -224,9 +210,9 @@ async def fetch_categories():
                     return data.get("trivia_categories", [])
     except Exception as e:
         logging.error(f"Failed to fetch trivia categories: {e}")
-    
+    # Fallback if API is unavailable
     return [
-        {"id": 9, "name": "General Knowledge"},
+        {"id": 9,  "name": "General Knowledge"},
         {"id": 21, "name": "Sports"},
         {"id": 22, "name": "Geography"},
         {"id": 23, "name": "History"}
@@ -240,7 +226,7 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
         url += f"&category={category_id}"
     if difficulty != "any":
         url += f"&difficulty={difficulty}"
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -248,31 +234,22 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
                     return await interaction.followup.send(
                         "Sorry, the trivia service is unavailable right now. Please try again later."
                     )
-                
                 data = await response.json()
                 if data["response_code"] != 0 or not data["results"]:
                     return await interaction.followup.send(
                         "No trivia questions found with those parameters. Try different options!"
                     )
-                
-                result = data["results"][0]
-                question = html.unescape(result["question"])
-                correct = html.unescape(result["correct_answer"])
+                result    = data["results"][0]
+                question  = html.unescape(result["question"])
+                correct   = html.unescape(result["correct_answer"])
                 incorrect = [html.unescape(ans) for ans in result["incorrect_answers"]]
-                category = result["category"]
+                category  = result["category"]
                 difficulty = result["difficulty"]
-                
+
                 options = incorrect + [correct]
                 random.shuffle(options)
-                
-                view = TriviaView(
-                    interaction.user.id,
-                    options,
-                    correct,
-                    category,
-                    difficulty
-                )
-                
+
+                view = TriviaView(interaction.user.id, options, correct, category, difficulty)
                 embed = discord.Embed(
                     title=f"Trivia Time! ({difficulty.capitalize()})",
                     description=question,
@@ -280,19 +257,17 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
                 )
                 embed.set_author(name=category)
                 embed.set_footer(text=f"Requested by {interaction.user.display_name}")
-                
+
                 for idx, opt in enumerate(options, start=1):
                     embed.add_field(name=f"{idx}.", value=opt, inline=False)
-                
+
                 msg = await interaction.followup.send(embed=embed, view=view)
                 view.message = msg
-                
     except Exception as e:
         logging.error(f"Trivia error: {e}")
         await interaction.followup.send(
             "Sorry, something went wrong while fetching your trivia question. Please try again."
         )
-
 
 @bot.tree.command(name="fact", description="Get a random fact.")
 async def fact_slash(interaction: discord.Interaction):
@@ -300,7 +275,7 @@ async def fact_slash(interaction: discord.Interaction):
 
 @bot.tree.command(name="wiki", description="Search the Terraria Wiki for an entity page.")
 async def wiki_slash(interaction: discord.Interaction, query: str):
-    url = f"https://terraria.wiki.gg/wiki/{query.replace(' ', '_')}"
+    url  = f"https://terraria.wiki.gg/wiki/{query.replace(' ', '_')}"
     resp = requests.get(url)
     if resp.status_code == 200:
         await interaction.response.send_message(f"Here's the page: {url}")
@@ -326,17 +301,13 @@ async def coin_slash(interaction: discord.Interaction):
 @bot.tree.command(name="trivia", description="Answer a multiple choice trivia question.")
 async def trivia_slash(interaction: discord.Interaction):
     await interaction.response.defer()
-    
     categories = await fetch_categories()
-    
-    view = TriviaSetupView(interaction, categories)
-    
-    embed = discord.Embed(
+    view       = TriviaSetupView(interaction, categories)
+    embed      = discord.Embed(
         title="Trivia Setup",
         description="Choose a category and difficulty for your trivia question!",
         color=discord.Color.blue()
     )
-    
     await interaction.followup.send(embed=embed, view=view)
 
 @bot.tree.command(name="ask", description="Ask OpenAI a question")
@@ -344,7 +315,7 @@ async def ask_slash(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
-        resp = client.chat.completions.create(
+        resp   = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role":"user","content":question}],
             max_tokens=50
@@ -358,8 +329,8 @@ async def ask_slash(interaction: discord.Interaction, question: str):
 async def on_message(message):
     if message.author.bot:
         return
-    words = re.findall(r"[\w']+", message.content) 
-    miss = SPELL.unknown(words)
+    words = re.findall(r"[\w']+", message.content)
+    miss  = SPELL.unknown(words)
     if miss:
         logging.debug(f"Misspelled words detected: {miss}")
         await message.channel.send(random.choice(MISSPELL_REPLIES))
@@ -374,11 +345,23 @@ async def on_ready():
     except Exception as e:
         logging.error(f"Error syncing commands: {e}")
 
-if __name__ == "__main__":
-    Thread(target=lambda: app.run(
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", 5000)),
-        debug=False,
-        use_reloader=False
-    )).start()
+def start_discord_bot():
+    """Run the Discord bot (blocking)."""
     bot.run(DISCORD_TOKEN)
+
+if __name__ != "__main__":
+    Thread(target=start_discord_bot, daemon=False).start()
+
+application = app
+
+if __name__ == "__main__":
+    Thread(
+        target=lambda: app.run(
+            host="0.0.0.0",
+            port=int(os.getenv("PORT", 5000)),
+            debug=False,
+            use_reloader=False
+        ),
+        daemon=False
+    ).start()
+    start_discord_bot()
