@@ -11,24 +11,18 @@ from discord.ext import commands
 from discord.ui import View, Button, Select
 from flask import Flask
 from openai import OpenAI
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from spellchecker import SpellChecker
-import randfacts
+import randfacts    
 from dotenv import load_dotenv
 from threading import Thread
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 
 load_dotenv()
-DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN")
-SPOTIFY_CLIENT_ID    = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET= os.getenv("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_REDIRECT_URI = "http://localhost:8888/callback"
-SPOTIFY_PLAYLIST_ID  = os.getenv("SPOTIFY_PLAYLIST_ID")
-OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not all([DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_PLAYLIST_ID, OPENAI_API_KEY]):
+if not all([DISCORD_TOKEN, OPENAI_API_KEY]):
     logging.error("Missing one or more required environment variables!")
     exit(1)
 
@@ -53,19 +47,6 @@ MISSPELL_REPLIES = [
     "Are you inventing a new language? Because that's something else!",
     "Spell check is tapping out—maybe it's time for a lesson!"
 ]
-
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id=SPOTIFY_CLIENT_ID,
-    client_secret=SPOTIFY_CLIENT_SECRET,
-    redirect_uri=SPOTIFY_REDIRECT_URI,
-    scope="playlist-modify-public",
-    cache_path=".spotify-token-cache"
-))
-client_credentials_manager = SpotifyClientCredentials(
-    client_id=SPOTIFY_CLIENT_ID,
-    client_secret=SPOTIFY_CLIENT_SECRET
-)
-SPOTIFY_URL_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -313,35 +294,6 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
         )
 
 
-@bot.tree.command(name="add", description="Add a song to the playlist using a URL or search query.")
-@app_commands.describe(track="Spotify link or search query for a song.")
-async def add_song(interaction: discord.Interaction, track: str):
-    await interaction.response.defer()
-    match = re.search(SPOTIFY_URL_REGEX, track)
-    if match:
-        track_id  = match.group(1)
-        track_uri = f"spotify:track:{track_id}"
-    else:
-        result = search_song(track)
-        if not result:
-            return await interaction.followup.send("Couldn't find a track with that name.")
-        track_uri = result["uri"]
-        track_id  = result["id"]
-
-    existing = sp.playlist_tracks(SPOTIFY_PLAYLIST_ID)
-    if any(item['track']['id'] == track_id for item in existing['items']):
-        return await interaction.followup.send("That track is already in the playlist! ✅")
-
-    try:
-        sp.playlist_add_items(SPOTIFY_PLAYLIST_ID, [track_uri])
-        info = sp.track(track_id)
-        await interaction.followup.send(
-            f"Added **{info['name']}** by **{info['artists'][0]['name']}** to the playlist! 🎶"
-        )
-    except spotipy.exceptions.SpotifyException as e:
-        logging.error(f"Spotify error: {e}")
-        await interaction.followup.send(f"Failed to add song: {e}")
-
 @bot.tree.command(name="fact", description="Get a random fact.")
 async def fact_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f"Did you know? {randfacts.get_fact()}")
@@ -391,8 +343,8 @@ async def trivia_slash(interaction: discord.Interaction):
 async def ask_slash(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
     try:
-        client= OpenAI(api_key=OPENAI_API_KEY)
-        resp  = client.chat.completions.create(
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role":"user","content":question}],
             max_tokens=50
@@ -402,15 +354,11 @@ async def ask_slash(interaction: discord.Interaction, question: str):
         logging.error(f"OpenAI error: {e}")
         await interaction.followup.send("Sorry, couldn't process that request.")
 
-def search_song(query: str):
-    results= sp.search(q=query, type='track')
-    return results['tracks']['items'][0] if results['tracks']['items'] else None
-
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
-    words= re.findall(r"[\w']+", message.content) 
+    words = re.findall(r"[\w']+", message.content) 
     miss = SPELL.unknown(words)
     if miss:
         logging.debug(f"Misspelled words detected: {miss}")
