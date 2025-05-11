@@ -331,30 +331,36 @@ async def ask_slash(interaction: discord.Interaction, question: str):
 async def weather_slash(interaction: discord.Interaction, city: str):
     await interaction.response.defer()
     try:
-        client = python_weather.Client()
-        weather = await client.find(city)
+        async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
+            weather = await client.get(city)
 
-        current = weather.current
+            embed = discord.Embed(
+                title=f"🌤 Weather in {city.title()}",
+                description=f"**{weather.description}**, {weather.temperature}°F",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Feels Like", value=f"{weather.feels_like}°F", inline=True)
+            embed.add_field(name="Humidity", value=f"{weather.humidity}%", inline=True)
+            embed.add_field(name="Wind", value=f"{weather.wind_speed} mph", inline=True)
 
-        # Convert °C to °F manually
-        def c_to_f(c): return round((c * 9/5) + 32)
+            # Optional: show forecast for next day
+            try:
+                tomorrow = weather.forecasts[1]
+                embed.add_field(
+                    name=f"Tomorrow ({tomorrow.date.strftime('%A')})",
+                    value=f"{tomorrow.sky_text}, High: {tomorrow.high}°F, Low: {tomorrow.low}°F",
+                    inline=False
+                )
+            except IndexError:
+                pass
 
-        embed = discord.Embed(
-            title=f"🌤 Weather in {weather.location.name}",
-            description=f"**{current.sky_text}**, {c_to_f(current.temperature)}°F",
-            color=discord.Color.blue()
-        )
-        embed.add_field(name="Feels Like", value=f"{c_to_f(current.feels_like)}°F", inline=True)
-        embed.add_field(name="Humidity", value=f"{current.humidity}%", inline=True)
-        embed.add_field(name="Wind", value=f"{current.wind_display}", inline=True)
-
-        embed.set_footer(text="Data provided by python_weather")
-        await interaction.followup.send(embed=embed)
-        await client.close()
+            embed.set_footer(text="Data provided by python_weather")
+            await interaction.followup.send(embed=embed)
 
     except Exception as e:
         logging.error(f"Weather lookup error: {e}")
         await interaction.followup.send("Couldn't fetch weather for that city. Try a valid city name.")
+
 
 
 @bot.event
