@@ -18,6 +18,7 @@ from threading import Thread
 import python_weather
 import asyncio
 import datetime
+from python_weather.errors import Error, RequestError
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 
@@ -327,49 +328,69 @@ async def ask_slash(interaction: discord.Interaction, question: str):
     except Exception as e:
         logging.error(f"OpenAI error: {e}")
         await interaction.followup.send("Sorry, couldn't process that request.")
-
-import datetime
-import logging
-import discord
-import python_weather
-from python_weather.errors import Error, RequestError
+\
 
 @bot.tree.command(name="weather", description="Look up the weather of your desired city.")
 async def weather_slash(interaction: discord.Interaction, city: str):
     await interaction.response.defer()
     try:
         async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
-            forecast = await client.get(city)
-            
-            today = datetime.datetime.now().strftime('%A, %B %d')
-            
+            weather = await client.get(city)
+            weather_emoji = "🌤️"  
+            if hasattr(weather.kind, "emoji"):
+                weather_emoji = weather.kind.emoji
             embed = discord.Embed(
-                title=f"🌤 Weather in {city.title()} - {today}",
-                description=f"**{forecast.current.type}**, {forecast.current.temperature}°F",
+                title=f"{weather_emoji} Weather in {weather.location} - {weather.datetime.strftime('%A, %B %d')}",
+                description=f"**{weather.description}**, {weather.temperature}°F",
                 color=discord.Color.blue()
             )
+            if weather.region and weather.country:
+                embed.add_field(name="Location", value=f"{weather.region}, {weather.country}", inline=False)
+            embed.add_field(name="Feels Like", value=f"{weather.feels_like}°F", inline=True)
+            embed.add_field(name="Humidity", value=f"{weather.humidity}%", inline=True)
+            wind_info = f"{weather.wind_speed} mph"
+            if weather.wind_direction:
+                direction_str = str(weather.wind_direction)
+                wind_info += f" {direction_str}"
+                if hasattr(weather.wind_direction, "emoji"):
+                    wind_info += f" {weather.wind_direction.emoji}"
+            embed.add_field(name="Wind", value=wind_info, inline=True)
             
-            embed.add_field(name="Humidity", value=f"{forecast.current.humidity}%", inline=True)
-            embed.add_field(name="Wind", value=f"{forecast.current.wind_speed} mph", inline=True)
-            embed.add_field(name="Precipitation", value=f"{forecast.current.precipitation}", inline=True)
+            embed.add_field(name="Precipitation", value=f"{weather.precipitation} in", inline=True)
+            embed.add_field(name="Pressure", value=f"{weather.pressure} in", inline=True)
+            embed.add_field(name="Visibility", value=f"{weather.visibility} mi", inline=True)
             
-            if forecast.forecasts:
+            if weather.ultraviolet:
+                uv_text = str(weather.ultraviolet)
+                if hasattr(weather.ultraviolet, "index"):
+                    uv_text = f"{uv_text} ({weather.ultraviolet.index})"
+                embed.add_field(name="UV Index", value=uv_text, inline=True)
+            
+            if weather.daily_forecasts:
                 forecast_text = ""
-                for i, day in enumerate(forecast.forecasts[:3]):
+                for i, day_forecast in enumerate(weather.daily_forecasts[:3]):
                     if i == 0:
                         day_name = "Today"
                     elif i == 1:
                         day_name = "Tomorrow"
                     else:
-                        day_name = day.date.strftime('%A')
-                    
-                    forecast_text += f"**{day_name}**: {day.type}, "
-                    forecast_text += f"High: {day.highest}°F, "
-                    forecast_text += f"Low: {day.lowest}°F\n"
-                
-                embed.add_field(name="3-Day Forecast", value=forecast_text, inline=False)
-            
-            embed.set_footer(text="Data provided by python_weather")
+                        if hasattr(day_forecast, 'date'):
+                            day_name = day_forecast.date.strftime('%A')
+                        else:
+                            day_name = f"Day {i+1}"
+                    day_emoji = "🌤️"
+                    if hasattr(day_forecast, "kind") and hasattr(day_forecast.kind, "emoji"):
+                        day_emoji = day_forecast.kind.emoji
+                    day_text = f"{day_emoji} **{day_name}**: "
+                    if hasattr(day_forecast, 'description'):
+                        day_text += f"{day_forecast.description}, "
+                    if hasattr(day_forecast, 'highest'):
+                        day_text += f"High: {day_forecast.highest}°F, "
+                    if hasattr(day_forecast, 'lowest'):
+                        day_text += f"Low: {day_forecast.lowest}°F"
+                    forecast_text += day_text + "\n"
+                embed.add_field(name="Forecast", value=forecast_text, inline=False)
+            embed.set_footer(text=f"Data provided by python_weather • {weather.datetime.strftime('%H:%M')}")
             
             await interaction.followup.send(embed=embed)
 
@@ -381,10 +402,6 @@ async def weather_slash(interaction: discord.Interaction, city: str):
         await interaction.followup.send(f"Error getting weather for '{city}': {str(e)}")
     except Exception as e:
         logging.error(f"Unexpected error in weather command: {str(e)}")
-        await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Please try a valid city name.")
-
-    except Exception as e:
-        logging.error(f"Weather lookup error: {str(e)}")
         await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Please try a valid city name.")
 
 @bot.event
