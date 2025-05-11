@@ -328,47 +328,60 @@ async def ask_slash(interaction: discord.Interaction, question: str):
         logging.error(f"OpenAI error: {e}")
         await interaction.followup.send("Sorry, couldn't process that request.")
 
+import datetime
+import logging
+import discord
+import python_weather
+from python_weather.errors import Error, RequestError
+
 @bot.tree.command(name="weather", description="Look up the weather of your desired city.")
 async def weather_slash(interaction: discord.Interaction, city: str):
     await interaction.response.defer()
     try:
         async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
-            weather = await client.get(city)
+            forecast = await client.get(city)
             
-            current = weather.current
+            today = datetime.datetime.now().strftime('%A, %B %d')
             
             embed = discord.Embed(
-                title=f"🌤 Weather in {city.title()} - {datetime.datetime.now().strftime('%A, %B %d')}",
-                description=f"**{current.sky_text}**, {current.temperature}°F",
+                title=f"🌤 Weather in {city.title()} - {today}",
+                description=f"**{forecast.current.type}**, {forecast.current.temperature}°F",
                 color=discord.Color.blue()
             )
-            embed.add_field(name="Feels Like", value=f"{current.feels_like}°F", inline=True)
-            embed.add_field(name="Humidity", value=f"{current.humidity}%", inline=True)
-            embed.add_field(name="Wind", value=f"{current.wind_speed} mph", inline=True)
             
-            if weather.forecasts:
+            embed.add_field(name="Humidity", value=f"{forecast.current.humidity}%", inline=True)
+            embed.add_field(name="Wind", value=f"{forecast.current.wind_speed} mph", inline=True)
+            embed.add_field(name="Precipitation", value=f"{forecast.current.precipitation}", inline=True)
+            
+            if forecast.forecasts:
                 forecast_text = ""
-                for i, forecast in enumerate(weather.forecasts[:3]):
+                for i, day in enumerate(forecast.forecasts[:3]):
                     if i == 0:
                         day_name = "Today"
                     elif i == 1:
                         day_name = "Tomorrow"
                     else:
-                        day_name = forecast.date.strftime('%A')
+                        day_name = day.date.strftime('%A')
                     
-                    forecast_text += f"**{day_name}**: {forecast.sky_text}, "
-                    forecast_text += f"High: {forecast.temperature}°F"
-                    
-                    if hasattr(forecast, 'low'):
-                        forecast_text += f", Low: {forecast.low}°F"
-                    
-                    forecast_text += "\n"
+                    forecast_text += f"**{day_name}**: {day.type}, "
+                    forecast_text += f"High: {day.highest}°F, "
+                    forecast_text += f"Low: {day.lowest}°F\n"
                 
                 embed.add_field(name="3-Day Forecast", value=forecast_text, inline=False)
             
             embed.set_footer(text="Data provided by python_weather")
             
             await interaction.followup.send(embed=embed)
+
+    except RequestError as e:
+        logging.error(f"Weather lookup error (status {e.status}): {str(e)}")
+        await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Server returned status code: {e.status}")
+    except Error as e:
+        logging.error(f"Weather lookup error: {str(e)}")
+        await interaction.followup.send(f"Error getting weather for '{city}': {str(e)}")
+    except Exception as e:
+        logging.error(f"Unexpected error in weather command: {str(e)}")
+        await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Please try a valid city name.")
 
     except Exception as e:
         logging.error(f"Weather lookup error: {str(e)}")
