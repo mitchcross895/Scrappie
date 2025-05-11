@@ -332,27 +332,30 @@ async def weather_slash(interaction: discord.Interaction, city: str):
     await interaction.response.defer()
     try:
         async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
-            weather = await client.get(city)
+            forecasts = await client.get(city)
+
+            if not forecasts:
+                raise ValueError("No forecast data returned.")
+
+            today = forecasts[0]
 
             embed = discord.Embed(
-                title=f"🌤 Weather in {city.title()}",
-                description=f"**{weather.description}**, {weather.temperature}°F",
+                title=f"🌤 Weather in {city.title()} - {today.date.strftime('%A')}",
+                description=f"**{today.description}**, {today.temperature}°F",
                 color=discord.Color.blue()
             )
-            embed.add_field(name="Feels Like", value=f"{weather.feels_like}°F", inline=True)
-            embed.add_field(name="Humidity", value=f"{weather.humidity}%", inline=True)
-            embed.add_field(name="Wind", value=f"{weather.wind_speed} mph", inline=True)
+            embed.add_field(name="Feels Like", value=f"{today.feels_like}°F", inline=True)
+            embed.add_field(name="Humidity", value=f"{today.humidity}%", inline=True)
+            embed.add_field(name="Wind", value=f"{today.wind_speed} mph", inline=True)
 
-            # Optional: show forecast for next day
-            try:
-                tomorrow = weather.forecasts[1]
+            # Optional: show tomorrow's forecast
+            if len(forecasts) > 1:
+                tomorrow = forecasts[1]
                 embed.add_field(
                     name=f"Tomorrow ({tomorrow.date.strftime('%A')})",
-                    value=f"{tomorrow.sky_text}, High: {tomorrow.high}°F, Low: {tomorrow.low}°F",
+                    value=f"{tomorrow.description}, High: {tomorrow.temperature}°F",
                     inline=False
                 )
-            except IndexError:
-                pass
 
             embed.set_footer(text="Data provided by python_weather")
             await interaction.followup.send(embed=embed)
@@ -360,6 +363,7 @@ async def weather_slash(interaction: discord.Interaction, city: str):
     except Exception as e:
         logging.error(f"Weather lookup error: {e}")
         await interaction.followup.send("Couldn't fetch weather for that city. Try a valid city name.")
+
 
 
 
