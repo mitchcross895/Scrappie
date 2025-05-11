@@ -339,15 +339,19 @@ async def weather_slash(interaction: discord.Interaction, city: str):
             weather_emoji = "🌤️"  
             if hasattr(weather.kind, "emoji"):
                 weather_emoji = weather.kind.emoji
+        
             embed = discord.Embed(
                 title=f"{weather_emoji} Weather in {weather.location} - {weather.datetime.strftime('%A, %B %d')}",
                 description=f"**{weather.description}**, {weather.temperature}°F",
                 color=discord.Color.blue()
             )
+            
             if weather.region and weather.country:
                 embed.add_field(name="Location", value=f"{weather.region}, {weather.country}", inline=False)
+            
             embed.add_field(name="Feels Like", value=f"{weather.feels_like}°F", inline=True)
             embed.add_field(name="Humidity", value=f"{weather.humidity}%", inline=True)
+            
             wind_info = f"{weather.wind_speed} mph"
             if weather.wind_direction:
                 direction_str = str(weather.wind_direction)
@@ -368,6 +372,7 @@ async def weather_slash(interaction: discord.Interaction, city: str):
             
             if weather.daily_forecasts:
                 forecast_text = ""
+                
                 for i, day_forecast in enumerate(weather.daily_forecasts[:3]):
                     if i == 0:
                         day_name = "Today"
@@ -378,18 +383,50 @@ async def weather_slash(interaction: discord.Interaction, city: str):
                             day_name = day_forecast.date.strftime('%A')
                         else:
                             day_name = f"Day {i+1}"
+                    
                     day_emoji = "🌤️"
                     if hasattr(day_forecast, "kind") and hasattr(day_forecast.kind, "emoji"):
                         day_emoji = day_forecast.kind.emoji
+                    
                     day_text = f"{day_emoji} **{day_name}**: "
+                    
                     if hasattr(day_forecast, 'description'):
                         day_text += f"{day_forecast.description}, "
+                    elif hasattr(day_forecast, 'kind'):
+                        day_text += f"{day_forecast.kind}, "
+                    
+                    logging.info(f"Day {i} forecast attributes: {dir(day_forecast)}")
+                    
+                    temp_high = None
                     if hasattr(day_forecast, 'highest'):
-                        day_text += f"High: {day_forecast.highest}°F, "
+                        temp_high = day_forecast.highest
+                    elif hasattr(day_forecast, 'high'):
+                        temp_high = day_forecast.high
+                    elif hasattr(day_forecast, 'temperature'):
+                        temp_high = day_forecast.temperature
+                    
+                    temp_low = None
                     if hasattr(day_forecast, 'lowest'):
-                        day_text += f"Low: {day_forecast.lowest}°F"
+                        temp_low = day_forecast.lowest
+                    elif hasattr(day_forecast, 'low'):
+                        temp_low = day_forecast.low
+                    
+                    if temp_high is not None:
+                        day_text += f"High: {temp_high}°F"
+                        if temp_low is not None:
+                            day_text += f", Low: {temp_low}°F"
+                    else:
+                        attrs = vars(day_forecast)
+                        logging.info(f"Day {i} forecast dict: {attrs}")
+                        
+                        for attr_name, attr_value in attrs.items():
+                            if 'temp' in attr_name.lower() or 'high' in attr_name.lower() or 'low' in attr_name.lower():
+                                day_text += f"{attr_name}: {attr_value}°F, "
+                    
                     forecast_text += day_text + "\n"
+                
                 embed.add_field(name="Forecast", value=forecast_text, inline=False)
+            
             embed.set_footer(text=f"Data provided by python_weather • {weather.datetime.strftime('%H:%M')}")
             
             await interaction.followup.send(embed=embed)
