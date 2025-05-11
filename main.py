@@ -331,18 +331,20 @@ async def ask_slash(interaction: discord.Interaction, question: str):
 async def weather_slash(interaction: discord.Interaction, city: str):
     await interaction.response.defer()
     try:
-        client = python_weather.Client(format=python_weather.IMPERIAL)
+        client = python_weather.Client()
         weather = await client.find(city)
 
         current = weather.current
-        forecast = weather.forecasts[0]
+
+        # Convert °C to °F manually
+        def c_to_f(c): return round((c * 9/5) + 32)
 
         embed = discord.Embed(
             title=f"🌤 Weather in {weather.location.name}",
-            description=f"**{current.sky_text}**, {current.temperature}°F",
+            description=f"**{current.sky_text}**, {c_to_f(current.temperature)}°F",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Feels Like", value=f"{current.feels_like}°F", inline=True)
+        embed.add_field(name="Feels Like", value=f"{c_to_f(current.feels_like)}°F", inline=True)
         embed.add_field(name="Humidity", value=f"{current.humidity}%", inline=True)
         embed.add_field(name="Wind", value=f"{current.wind_display}", inline=True)
 
