@@ -15,6 +15,8 @@ from spellchecker import SpellChecker
 import randfacts    
 from dotenv import load_dotenv
 from threading import Thread
+import python_weather
+import asyncio
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 
@@ -324,6 +326,34 @@ async def ask_slash(interaction: discord.Interaction, question: str):
     except Exception as e:
         logging.error(f"OpenAI error: {e}")
         await interaction.followup.send("Sorry, couldn't process that request.")
+
+@bot.tree.command(name="weather", description="Look up the weather of your desired city.")
+async def weather_slash(interaction: discord.Interaction, city: str):
+    await interaction.response.defer()
+    try:
+        client = python_weather.Client(format=python_weather.IMPERIAL)
+        weather = await client.find(city)
+
+        current = weather.current
+        forecast = weather.forecasts[0]
+
+        embed = discord.Embed(
+            title=f"🌤 Weather in {weather.location.name}",
+            description=f"**{current.sky_text}**, {current.temperature}°F",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Feels Like", value=f"{current.feels_like}°F", inline=True)
+        embed.add_field(name="Humidity", value=f"{current.humidity}%", inline=True)
+        embed.add_field(name="Wind", value=f"{current.wind_display}", inline=True)
+
+        embed.set_footer(text="Data provided by python_weather")
+        await interaction.followup.send(embed=embed)
+        await client.close()
+
+    except Exception as e:
+        logging.error(f"Weather lookup error: {e}")
+        await interaction.followup.send("Couldn't fetch weather for that city. Try a valid city name.")
+
 
 @bot.event
 async def on_message(message):
