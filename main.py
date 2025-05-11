@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from threading import Thread
 import python_weather
 import asyncio
+import datetime
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 
@@ -337,20 +338,17 @@ async def weather_slash(interaction: discord.Interaction, city: str):
             current = weather.current
             
             embed = discord.Embed(
-                title=f"🌤 Weather in {city.title()} - {current.date.strftime('%A, %B %d')}",
+                title=f"🌤 Weather in {city.title()} - {datetime.datetime.now().strftime('%A, %B %d')}",
                 description=f"**{current.sky_text}**, {current.temperature}°F",
                 color=discord.Color.blue()
             )
-            
             embed.add_field(name="Feels Like", value=f"{current.feels_like}°F", inline=True)
             embed.add_field(name="Humidity", value=f"{current.humidity}%", inline=True)
             embed.add_field(name="Wind", value=f"{current.wind_speed} mph", inline=True)
             
-            forecasts = weather.forecasts
-            if forecasts:
+            if weather.forecasts:
                 forecast_text = ""
-                
-                for i, forecast in enumerate(forecasts[:3]):
+                for i, forecast in enumerate(weather.forecasts[:3]):
                     if i == 0:
                         day_name = "Today"
                     elif i == 1:
@@ -359,8 +357,12 @@ async def weather_slash(interaction: discord.Interaction, city: str):
                         day_name = forecast.date.strftime('%A')
                     
                     forecast_text += f"**{day_name}**: {forecast.sky_text}, "
-                    forecast_text += f"High: {forecast.temperature}°F, "
-                    forecast_text += f"Low: {forecast.low}°F\n"
+                    forecast_text += f"High: {forecast.temperature}°F"
+                    
+                    if hasattr(forecast, 'low'):
+                        forecast_text += f", Low: {forecast.low}°F"
+                    
+                    forecast_text += "\n"
                 
                 embed.add_field(name="3-Day Forecast", value=forecast_text, inline=False)
             
