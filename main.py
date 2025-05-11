@@ -332,8 +332,9 @@ async def weather_slash(interaction: discord.Interaction, city: str):
     await interaction.response.defer()
     try:
         async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
-            forecasts = await client.get(city)
+            weather = await client.get(city)
 
+            forecasts = weather.forecasts
             if not forecasts:
                 raise ValueError("No forecast data returned.")
 
@@ -341,19 +342,19 @@ async def weather_slash(interaction: discord.Interaction, city: str):
 
             embed = discord.Embed(
                 title=f"🌤 Weather in {city.title()} - {today.date.strftime('%A')}",
-                description=f"**{today.description}**, {today.temperature}°F",
+                description=f"**{weather.current.sky_text}**, {weather.current.temperature}°F",
                 color=discord.Color.blue()
             )
-            embed.add_field(name="Feels Like", value=f"{today.feels_like}°F", inline=True)
-            embed.add_field(name="Humidity", value=f"{today.humidity}%", inline=True)
-            embed.add_field(name="Wind", value=f"{today.wind_speed} mph", inline=True)
+            embed.add_field(name="Feels Like", value=f"{weather.current.feels_like}°F", inline=True)
+            embed.add_field(name="Humidity", value=f"{weather.current.humidity}%", inline=True)
+            embed.add_field(name="Wind", value=f"{weather.current.wind_speed} mph", inline=True)
 
             # Optional: show tomorrow's forecast
             if len(forecasts) > 1:
                 tomorrow = forecasts[1]
                 embed.add_field(
                     name=f"Tomorrow ({tomorrow.date.strftime('%A')})",
-                    value=f"{tomorrow.description}, High: {tomorrow.temperature}°F",
+                    value=f"{tomorrow.sky_text}, High: {tomorrow.temperature}°F",
                     inline=False
                 )
 
@@ -363,9 +364,6 @@ async def weather_slash(interaction: discord.Interaction, city: str):
     except Exception as e:
         logging.error(f"Weather lookup error: {e}")
         await interaction.followup.send("Couldn't fetch weather for that city. Try a valid city name.")
-
-
-
 
 @bot.event
 async def on_message(message):
