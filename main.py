@@ -691,9 +691,6 @@ async def xur_slash(
         logging.error(f"Error retrieving Xûr data: {e}")
         await interaction.followup.send(f"❌ Error retrieving Xûr data: {str(e)}")
 
-def setup(bot):
-    bot.tree.add_command(xur_slash)
-
 @bot.tree.command(name="fact", description="Get a random fact.")
 async def fact_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f"Did you know? {randfacts.get_fact()}")
