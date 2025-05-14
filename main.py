@@ -490,7 +490,7 @@ async def get_user_destiny_profile(user_id: int) -> Dict[str, Any]:
         "character_id": DEFAULT_CHARACTER_ID
     }
 
-@app_commands.command(name="xur", description="Get Xûr's inventory for the weekend.")
+@bot.tree.command(name="xur", description="Get Xûr's inventory for the weekend.")
 async def xur_slash(
     interaction: discord.Interaction, 
     membership_type: Optional[int] = None, 
