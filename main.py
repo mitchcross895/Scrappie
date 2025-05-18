@@ -240,30 +240,174 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
         logging.error(f"Trivia error: {e}")
         await interaction.followup.send("An error occurred. Please try again.")
 
-# [Rest of your commands like /fact, /wiki, /weather, /ask, etc. are already solid and can remain unchanged.]
+@bot.tree.command(name="fact", description="Get a random fact.")
+async def fact_slash(interaction: discord.Interaction):
+    await interaction.response.send_message(f"Did you know? {randfacts.get_fact()}")
 
-# ========== Events ==========
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    words = re.findall(r"[\w']+", message.content)
-    miss = SPELL.unknown(words)
-    if miss:
-        logging.debug(f"Misspelled words detected: {miss}")
-        await message.channel.send(random.choice(MISSPELL_REPLIES))
-    await bot.process_commands(message)
+@bot.tree.command(name="wiki", description="Search the Terraria Wiki for an entity page.")
+async def wiki_slash(interaction: discord.Interaction, query: str):
+    url  = f"https://terraria.wiki.gg/wiki/{query.replace(' ', '_')}"
+    resp = requests.get(url)
+    if resp.status_code == 200:
+        await interaction.response.send_message(f"Here's the page: {url}")
+    else:
+        await interaction.response.send_message(f"No page found for **{query}**.")
 
-@bot.event
-async def on_ready():
-    logging.info(f'Logged in as {bot.user} (ID: {bot.user.id})')
+@bot.tree.command(name="ping", description="Check the bot's latency.")
+async def ping_slash(interaction: discord.Interaction):
+    await interaction.response.send_message("pong")
+
+@bot.tree.command(name="number", description="Generate a random number between two values.")
+async def number_slash(interaction: discord.Interaction, min_num: int, max_num: int):
+    if min_num > max_num:
+        return await interaction.response.send_message(
+            "Invalid range! First number must be ≤ second.", ephemeral=True
+        )
+    await interaction.response.send_message(f"Here is your number: {random.randint(min_num, max_num)}")
+
+@bot.tree.command(name="coin", description="Flip a coin.")
+async def coin_slash(interaction: discord.Interaction):
+    await interaction.response.send_message("Heads" if random.randint(0,1)==0 else "Tails")
+
+@bot.tree.command(name="trivia", description="Answer a multiple choice trivia question.")
+async def trivia_slash(interaction: discord.Interaction):
+    await interaction.response.defer()
+    categories = await fetch_categories()
+    view       = TriviaSetupView(interaction, categories)
+    embed      = discord.Embed(
+        title="Trivia Setup",
+        description="Choose a category and difficulty for your trivia question!",
+        color=discord.Color.blue()
+    )
+    await interaction.followup.send(embed=embed, view=view)
+
+@bot.tree.command(name="ask", description="Ask OpenAI a question")
+async def ask_slash(interaction: discord.Interaction, question: str):
+    await interaction.response.defer()
     try:
-        await bot.tree.sync()
-        logging.info("Slash commands synced.")
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp   = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role":"user","content":question}],
+            max_tokens=50
+        )
+        await interaction.followup.send(resp.choices[0].message.content)
     except Exception as e:
-        logging.error(f"Error syncing commands: {e}")
+        logging.error(f"OpenAI error: {e}")
+        await interaction.followup.send("Sorry, couldn't process that request.")
+\
 
-# ========== Start Bot ==========
+@bot.tree.command(name="weather", description="Look up the weather of your desired city.")
+async def weather_slash(interaction: discord.Interaction, city: str):
+    await interaction.response.defer()
+    try:
+        async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
+            weather = await client.get(city)
+            weather_emoji = "🌤️"  
+            if hasattr(weather.kind, "emoji"):
+                weather_emoji = weather.kind.emoji
+        
+            embed = discord.Embed(
+                title=f"{weather_emoji} Weather in {weather.location} - {weather.datetime.strftime('%A, %B %d')}",
+                description=f"**{weather.description}**, {weather.temperature}°F",
+                color=discord.Color.blue()
+            )
+            
+            if weather.region and weather.country:
+                embed.add_field(name="Location", value=f"{weather.region}, {weather.country}", inline=False)
+            
+            embed.add_field(name="Feels Like", value=f"{weather.feels_like}°F", inline=True)
+            embed.add_field(name="Humidity", value=f"{weather.humidity}%", inline=True)
+            
+            wind_info = f"{weather.wind_speed} mph"
+            if weather.wind_direction:
+                direction_str = str(weather.wind_direction)
+                wind_info += f" {direction_str}"
+                if hasattr(weather.wind_direction, "emoji"):
+                    wind_info += f" {weather.wind_direction.emoji}"
+            embed.add_field(name="Wind", value=wind_info, inline=True)
+            
+            embed.add_field(name="Precipitation", value=f"{weather.precipitation} in", inline=True)
+            embed.add_field(name="Pressure", value=f"{weather.pressure} in", inline=True)
+            embed.add_field(name="Visibility", value=f"{weather.visibility} mi", inline=True)
+            
+            if weather.ultraviolet:
+                uv_text = str(weather.ultraviolet)
+                if hasattr(weather.ultraviolet, "index"):
+                    uv_text = f"{uv_text} ({weather.ultraviolet.index})"
+                embed.add_field(name="UV Index", value=uv_text, inline=True)
+            
+            if weather.daily_forecasts:
+                forecast_text = ""
+                
+                for i, day_forecast in enumerate(weather.daily_forecasts[:3]):
+                    if i == 0:
+                        day_name = "Today"
+                    elif i == 1:
+                        day_name = "Tomorrow"
+                    else:
+                        if hasattr(day_forecast, 'date'):
+                            day_name = day_forecast.date.strftime('%A')
+                        else:
+                            day_name = f"Day {i+1}"
+                    
+                    day_emoji = "🌤️"
+                    if hasattr(day_forecast, "kind") and hasattr(day_forecast.kind, "emoji"):
+                        day_emoji = day_forecast.kind.emoji
+                    
+                    day_text = f"{day_emoji} **{day_name}**: "
+                    
+                    if hasattr(day_forecast, 'description'):
+                        day_text += f"{day_forecast.description}, "
+                    elif hasattr(day_forecast, 'kind'):
+                        day_text += f"{day_forecast.kind}, "
+                    
+                    logging.info(f"Day {i} forecast attributes: {dir(day_forecast)}")
+                    
+                    temp_high = None
+                    if hasattr(day_forecast, 'highest'):
+                        temp_high = day_forecast.highest
+                    elif hasattr(day_forecast, 'high'):
+                        temp_high = day_forecast.high
+                    elif hasattr(day_forecast, 'temperature'):
+                        temp_high = day_forecast.temperature
+                    
+                    temp_low = None
+                    if hasattr(day_forecast, 'lowest'):
+                        temp_low = day_forecast.lowest
+                    elif hasattr(day_forecast, 'low'):
+                        temp_low = day_forecast.low
+                    
+                    if temp_high is not None:
+                        day_text += f"High: {temp_high}°F"
+                        if temp_low is not None:
+                            day_text += f", Low: {temp_low}°F"
+                    else:
+                        attrs = vars(day_forecast)
+                        logging.info(f"Day {i} forecast dict: {attrs}")
+                        
+                        for attr_name, attr_value in attrs.items():
+                            if 'temp' in attr_name.lower() or 'high' in attr_name.lower() or 'low' in attr_name.lower():
+                                day_text += f"{attr_name}: {attr_value}°F, "
+                    
+                    forecast_text += day_text + "\n"
+                
+                embed.add_field(name="Forecast", value=forecast_text, inline=False)
+            
+            embed.set_footer(text=f"Data provided by python_weather • {weather.datetime.strftime('%H:%M')}")
+            
+            await interaction.followup.send(embed=embed)
+
+    except RequestError as e:
+        logging.error(f"Weather lookup error (status {e.status}): {str(e)}")
+        await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Server returned status code: {e.status}")
+    except Error as e:
+        logging.error(f"Weather lookup error: {str(e)}")
+        await interaction.followup.send(f"Error getting weather for '{city}': {str(e)}")
+    except Exception as e:
+        logging.error(f"Unexpected error in weather command: {str(e)}")
+        await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Please try a valid city name.")
+
 def start_discord_bot():
     bot.run(DISCORD_TOKEN)
 
