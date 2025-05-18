@@ -490,18 +490,100 @@ async def get_user_destiny_profile(user_id: int) -> Dict[str, Any]:
         "character_id": DEFAULT_CHARACTER_ID
     }
 
-@bot.tree.command(name="xur", description="Get Xûr's inventory for the weekend.")
-async def xur_slash(
-    interaction: discord.Interaction, 
-    membership_type: Optional[int] = None, 
-    membership_id: Optional[str] = None, 
-    character_id: Optional[str] = None
-):
-    await interaction.response.defer()
+# Constants
+XUR_VENDOR_HASH = 2190858386
+XUR_ICON_URL = "https://www.bungie.net/common/destiny2_content/icons/e5656aa18ef40d4e6f5c9d8775cc177b.png"
+BUNGIE_API_BASE = "https://www.bungie.net/Platform"
+BUNGIE_URL_PREFIX = "https://www.bungie.net"
+
+# Error codes and messages
+ERROR_CODES = {
+    1601: "Invalid membership ID or type.",
+    1643: "Character not found.",
+    1627: "Xûr is not available right now. He appears Friday through Tuesday reset."
+}
+
+# Item category mapping
+ITEM_CATEGORIES = {
+    "weapon": {
+        "title": "Weapons",
+        "emoji": "🔫",
+        "categories": [1, 2, 3, 4]  # Weapon category IDs
+    },
+    "armor": {
+        "title": "Armor",
+        "emoji": "🛡️",
+        "categories": [20, 21, 22, 23, 24, 28]  # Armor category IDs
+    },
+    "other": {
+        "title": "Other Items",
+        "emoji": "📦"
+    }
+}
+
+class XurCommands(commands.Cog):
+    """Cog for Xûr-related commands"""
     
-    XUR_HASH = 2190858386
-    
-    if not all([membership_type, membership_id, character_id]):
+    def __init__(self, bot):
+        self.bot = bot
+        self.item_definitions_cache = {}
+        self.logger = logging.getLogger('xur_commands')
+
+    @app_commands.command(name="xur", description="Get Xûr's inventory for the weekend.")
+    @app_commands.describe(
+        membership_type="Your Destiny 2 platform (1: Xbox, 2: PSN, 3: Steam, etc.)",
+        membership_id="Your Bungie membership ID",
+        character_id="Your character ID"
+    )
+    async def xur_slash(
+        self,
+        interaction: discord.Interaction, 
+        membership_type: Optional[int] = None, 
+        membership_id: Optional[str] = None, 
+        character_id: Optional[str] = None
+    ):
+        """Command to display Xûr's current inventory"""
+        await interaction.response.defer()
+        
+        # Check for saved profile if parameters are missing
+        if not all([membership_type, membership_id, character_id]):
+            # First try to get values from user's registered profile
+            user_profile = await self.get_user_profile(interaction.user.id)
+            
+            if user_profile:
+                membership_type = membership_type or user_profile.get('membership_type')
+                membership_id = membership_id or user_profile.get('membership_id')
+                character_id = character_id or user_profile.get('character_id')
+            
+            # Still missing required parameters
+            if not all([membership_type, membership_id, character_id]):
+                await self.send_missing_parameters_embed(interaction)
+                return
+                
+        try:
+            # Fetch Xûr's inventory data
+            xur_data = await self.fetch_xur_inventory(membership_type, membership_id, character_id)
+            
+            # Create and send the embed response
+            embed = await self.create_xur_embed(xur_data)
+            await interaction.followup.send(embed=embed)
+                
+        except XurApiError as e:
+            await interaction.followup.send(f"❌ {e}")
+        except Exception as e:
+            self.logger.error(f"Error retrieving Xûr data: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ An unexpected error occurred. Please try again later.")
+
+    async def get_user_profile(self, user_id: int) -> Dict:
+        """
+        Get user's registered profile from database
+        This is a placeholder - implement database lookup
+        """
+        # TODO: Implement actual database/storage lookup for saved profiles
+        return None
+
+    async def send_missing_parameters_embed(self, interaction: discord.Interaction):
+        """Creates and sends an embed with instructions for missing parameters"""
         embed = discord.Embed(
             title="⚠️ Missing Parameters",
             description="To get Xûr's inventory, I need your Destiny 2 account information.",
@@ -518,35 +600,31 @@ async def xur_slash(
             inline=False
         )
         embed.add_field(
-            name="Setup .env File",
-            value="You can set up default values in your .env file:\n```\nDEFAULT_MEMBERSHIP_TYPE=3\nDEFAULT_MEMBERSHIP_ID=your_id\nDEFAULT_CHARACTER_ID=your_char_id\n```",
-            inline=False
-        )
-        embed.add_field(
             name="Membership Types",
             value="1: Xbox\n2: PSN\n3: Steam\n4: Blizzard\n5: Stadia\n6: Epic\n10: Demon\n254: BungieNext",
             inline=False
         )
         embed.add_field(
             name="How to find your IDs",
-            value="Visit Bungie.net, sign in, and check your profile URL for membership ID.\nFor character ID, you'll need to use the Bungie API or a third-party tool.",
+            value="Visit Bungie.net, sign in, and check your profile URL for membership ID.\n"
+                  "For character ID, you'll need to use the Bungie API or a third-party tool.",
             inline=False
         )
-        return await interaction.followup.send(embed=embed)
-    
-    try:
-        await fetch_destiny_definitions("DestinyInventoryItemDefinition")
+        await interaction.followup.send(embed=embed)
+
+    async def fetch_xur_inventory(self, membership_type: int, membership_id: str, character_id: str) -> Dict:
+        """
+        Fetches Xûr's inventory from the Bungie API
+        Raises XurApiError if there's an issue with the API
+        """
+        # Ensure definitions are loaded
+        await self.fetch_destiny_definitions("DestinyInventoryItemDefinition")
         
-        base_url = "https://www.bungie.net/Platform"
-        vendor_url = f"{base_url}/Destiny2/{membership_type}/Profile/{membership_id}/Character/{character_id}/Vendors/{XUR_HASH}/"
+        # Build vendor URL
+        components = "400,401,402"  # Vendor data, sales, categories
+        vendor_url = f"{BUNGIE_API_BASE}/Destiny2/{membership_type}/Profile/{membership_id}/Character/{character_id}/Vendors/{XUR_VENDOR_HASH}/?components={components}"
         
-      
-        components = "400,401,402"  
-        vendor_url += f"?components={components}"
-        
-        headers = {
-            "X-API-Key": DESTINY_API_KEY
-        }
+        headers = {"X-API-Key": self.bot.config.DESTINY_API_KEY}
         
         async with aiohttp.ClientSession() as session:
             async with session.get(vendor_url, headers=headers) as response:
@@ -555,141 +633,216 @@ async def xur_slash(
                     error_message = error_data.get("Message", "Unknown error")
                     error_code = error_data.get("ErrorCode", 0)
                     
-              
-                    if error_code == 1601:  
-                        return await interaction.followup.send("❌ Error: Invalid membership ID or type.")
-                    elif error_code == 1643:  
-                        return await interaction.followup.send("❌ Error: Character not found.")
-                    elif error_code == 1627:  
-                        return await interaction.followup.send("❌ Xûr is not available right now. He appears Friday through Tuesday reset.")
+                    # Handle known error codes
+                    if error_code in ERROR_CODES:
+                        raise XurApiError(ERROR_CODES[error_code])
                     else:
-                        return await interaction.followup.send(f"❌ API Error ({error_code}): {error_message}")
+                        raise XurApiError(f"API Error ({error_code}): {error_message}")
                 
                 data = await response.json()
                 vendor_data = data.get("Response", {})
                 
                 if not vendor_data or "vendor" not in vendor_data:
-                    return await interaction.followup.send("❌ Could not retrieve Xûr's inventory. He might not be available right now.")
+                    raise XurApiError("Could not retrieve Xûr's inventory. He might not be available right now.")
                 
-                embed = discord.Embed(
-                    title="🧙‍♂️ Xûr, Agent of the Nine",
-                    description="*His will is not his own; he comes to bring gifts of the Nine.*",
-                    color=discord.Color.dark_purple()
+                return vendor_data
+
+    async def create_xur_embed(self, vendor_data: Dict) -> discord.Embed:
+        """Creates a Discord embed with Xûr's inventory information"""
+        embed = discord.Embed(
+            title="🧙‍♂️ Xûr, Agent of the Nine",
+            description="*His will is not his own; he comes to bring gifts of the Nine.*",
+            color=discord.Color.dark_purple()
+        )
+        
+        embed.set_thumbnail(url=XUR_ICON_URL)
+        
+        # Add refresh date
+        vendor_info = vendor_data.get("vendor", {}).get("data", {})
+        refresh_date = vendor_info.get("nextRefreshDate", "Unknown")
+        if refresh_date and refresh_date != "Unknown":
+            try:
+                refresh_date = datetime.datetime.strptime(refresh_date, "%Y-%m-%dT%H:%M:%SZ")
+                refresh_date = refresh_date.strftime("%A, %B %d at %H:%M UTC")
+            except Exception as e:
+                self.logger.error(f"Error formatting date: {e}")
+            
+        embed.set_footer(text=f"Next refresh: {refresh_date}")
+        
+        # Add location
+        location = await self.get_xur_location(vendor_data)
+        if location and location != "Unknown":
+            embed.add_field(
+                name="📍 Current Location",
+                value=location,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📍 Possible Locations",
+                value="• Tower Hangar\n• EDZ (Winding Cove)\n• Nessus (Watcher's Grave)",
+                inline=False
+            )
+        
+        # Add inventory items
+        sales_data = vendor_data.get("sales", {}).get("data", {})
+        sales_items = sales_data.get("saleItems", {})
+        
+        if sales_items:
+            # Process and categorize items
+            categorized_items = await self.process_sales_items(sales_items)
+            
+            # Total count of all items
+            total_items = sum(len(items) for items in categorized_items.values())
+            shown_items = 0
+            
+            # Add each category to the embed
+            for category, items in categorized_items.items():
+                if not items:
+                    continue
+                    
+                category_config = ITEM_CATEGORIES.get(category, ITEM_CATEGORIES["other"])
+                
+                # Display up to 3 items per category
+                display_items = items[:3]
+                shown_items += len(display_items)
+                
+                value = "\n\n".join([entry for entry, _ in display_items])
+                embed.add_field(
+                    name=f"{category_config['emoji']} {category_config['title']} ({len(items)})",
+                    value=value,
+                    inline=False
                 )
+            
+            # Add note about additional items if not all are shown
+            if total_items > shown_items:
+                embed.add_field(
+                    name="📑 And more...",
+                    value=f"{total_items - shown_items} additional items not shown",
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="No Items Found",
+                value="Could not retrieve Xûr's inventory items.",
+                inline=False
+            )
+            
+        return embed
+
+    async def get_xur_location(self, vendor_data: Dict) -> str:
+        """Extract Xûr's current location from vendor data"""
+        categories = vendor_data.get("categories", {}).get("data", {}).get("categories", [])
+        location = "Unknown"
+        
+        for category in categories:
+            display_props = category.get("displayProperties", {})
+            if "location" in display_props.get("name", "").lower():
+                location = display_props.get("description", "Unknown")
+                break
                 
-                embed.set_thumbnail(url="https://www.bungie.net/common/destiny2_content/icons/e5656aa18ef40d4e6f5c9d8775cc177b.png")
+        return location
+
+    async def process_sales_items(self, sales_items: Dict) -> Dict[str, List[Tuple[str, str]]]:
+        """Process and categorize sales items"""
+        categorized_items = {
+            "weapon": [],
+            "armor": [],
+            "other": []
+        }
+        
+        for item_hash, item_data in sales_items.items():
+            if "itemHash" not in item_data:
+                continue
                 
-                vendor_info = vendor_data.get("vendor", {}).get("data", {})
-                refresh_date = vendor_info.get("nextRefreshDate", "Unknown")
-                if refresh_date and refresh_date != "Unknown":
-                    try:
-                        refresh_date = datetime.datetime.strptime(refresh_date, "%Y-%m-%dT%H:%M:%SZ")
-                        refresh_date = refresh_date.strftime("%A, %B %d at %H:%M UTC")
-                    except Exception as e:
-                        logging.error(f"Error formatting date: {e}")
-                    
-                embed.set_footer(text=f"Next refresh: {refresh_date}")
-                
-                sales_data = vendor_data.get("sales", {}).get("data", {})
-                sales_items = sales_data.get("saleItems", {})
-                
-                categories = vendor_data.get("categories", {}).get("data", {}).get("categories", [])
-                location = "Unknown"
-                for category in categories:
-                    if "location" in category.get("displayProperties", {}).get("name", "").lower():
-                        location = category.get("displayProperties", {}).get("description", "Unknown")
-                        break
-                
-                if location and location != "Unknown":
-                    embed.add_field(
-                        name="📍 Current Location",
-                        value=location,
-                        inline=False
-                    )
-                else:
-                    embed.add_field(
-                        name="📍 Possible Locations",
-                        value="• Tower Hangar\n• EDZ (Winding Cove)\n• Nessus (Watcher's Grave)",
-                        inline=False
-                    )
-                
-                if sales_items:
-                    weapons = []
-                    armor = []
-                    other_items = []
-                    
-                    for item_hash, item_data in sales_items.items():
-                        if "itemHash" not in item_data:
-                            continue
-                            
-                        item_hash_id = item_data["itemHash"]
-                        item_details = await get_item_details(item_hash_id)
-                        
-                        cost_text = "Free"
-                        if "costs" in item_data and item_data["costs"]:
-                            cost_items = []
-                            for cost in item_data["costs"]:
-                                quantity = cost.get("quantity", 0)
-                                currency_hash = cost.get("itemHash", 0)
-                                currency_name = await get_item_name(currency_hash)
-                                cost_items.append(f"{quantity} {currency_name}")
-                            
-                            cost_text = ", ".join(cost_items)
-                        
-                        icon_url = item_details.get("icon", "")
-                        item_name = item_details.get("name", "Unknown Item")
-                        item_tier = item_details.get("tier", "")
-                        
-                        item_entry = f"**{item_name}**"
-                        if item_tier:
-                            item_entry += f" • *{item_tier}*"
-                        item_entry += f"\nCost: {cost_text}"
-                        
-                        category = categorize_item(item_details)
-                        
-                        if category == "weapon":
-                            weapons.append((item_entry, icon_url))
-                        elif category == "armor":
-                            armor.append((item_entry, icon_url))
-                        else:
-                            other_items.append((item_entry, icon_url))
-                    
-                    def format_category(items, name, emoji):
-                        if not items:
-                            return
-                        
-                        value = "\n\n".join([entry for entry, _ in items[:3]])
-                        embed.add_field(
-                            name=f"{emoji} {name} ({len(items)})",
-                            value=value,
-                            inline=False
-                        )
-                    
-                    format_category(weapons, "Weapons", "🔫")
-                    format_category(armor, "Armor", "🛡️")
-                    format_category(other_items, "Other Items", "📦")
-                    
-                    total_items = len(weapons) + len(armor) + len(other_items)
-                    shown_items = min(3, len(weapons)) + min(3, len(armor)) + min(3, len(other_items))
-                    
-                    if total_items > shown_items:
-                        embed.add_field(
-                            name="📑 And more...",
-                            value=f"{total_items - shown_items} additional items not shown",
-                            inline=False
-                        )
-                else:
-                    embed.add_field(
-                        name="No Items Found",
-                        value="Could not retrieve Xûr's inventory items.",
-                        inline=False
-                    )
-                
-                await interaction.followup.send(embed=embed)
-                
-    except Exception as e:
-        logging.error(f"Error retrieving Xûr data: {e}")
-        await interaction.followup.send(f"❌ Error retrieving Xûr data: {str(e)}")
+            item_hash_id = item_data["itemHash"]
+            item_details = await self.get_item_details(item_hash_id)
+            
+            cost_text = await self.format_item_cost(item_data)
+            
+            icon_url = item_details.get("icon", "")
+            item_name = item_details.get("name", "Unknown Item")
+            item_tier = item_details.get("tier", "")
+            
+            item_entry = f"**{item_name}**"
+            if item_tier:
+                item_entry += f" • *{item_tier}*"
+            item_entry += f"\nCost: {cost_text}"
+            
+            # Categorize the item
+            category = self.categorize_item(item_details)
+            categorized_items[category].append((item_entry, icon_url))
+        
+        return categorized_items
+
+    async def format_item_cost(self, item_data: Dict) -> str:
+        """Format the cost information for an item"""
+        if "costs" not in item_data or not item_data["costs"]:
+            return "Free"
+            
+        cost_items = []
+        for cost in item_data["costs"]:
+            quantity = cost.get("quantity", 0)
+            currency_hash = cost.get("itemHash", 0)
+            currency_name = await self.get_item_name(currency_hash)
+            cost_items.append(f"{quantity} {currency_name}")
+        
+        return ", ".join(cost_items)
+
+    def categorize_item(self, item_details: Dict) -> str:
+        """Determine the category of an item based on its details"""
+        item_type = item_details.get("itemType", 0)
+        item_category = item_details.get("itemCategoryHashes", [])
+        
+        # Check if it's a weapon
+        weapon_categories = ITEM_CATEGORIES["weapon"]["categories"]
+        if any(cat in weapon_categories for cat in item_category):
+            return "weapon"
+            
+        # Check if it's armor
+        armor_categories = ITEM_CATEGORIES["armor"]["categories"]
+        if any(cat in armor_categories for cat in item_category):
+            return "armor"
+            
+        # Default to other
+        return "other"
+
+    async def fetch_destiny_definitions(self, definition_type: str):
+        """
+        Fetch Destiny 2 definitions from the Bungie API
+        This is a placeholder - implement proper definition loading and caching
+        """
+        # TODO: Implement proper manifest download and caching
+        if definition_type not in self.item_definitions_cache:
+            self.item_definitions_cache[definition_type] = {}
+            # In a real implementation, you'd download and load definitions from the manifest
+
+    async def get_item_details(self, item_hash: int) -> Dict:
+        """Get item details from the definitions cache"""
+        # TODO: Replace with actual item definition lookup
+        # This is a simplified placeholder
+        if str(item_hash) in self.item_definitions_cache.get("DestinyInventoryItemDefinition", {}):
+            return self.item_definitions_cache["DestinyInventoryItemDefinition"][str(item_hash)]
+        
+        # If not in cache, return placeholder data
+        return {
+            "name": f"Item {item_hash}",
+            "tier": "Common",
+            "icon": f"{BUNGIE_URL_PREFIX}/common/destiny2_content/icons/placeholder.png",
+            "itemType": 0,
+            "itemCategoryHashes": []
+        }
+
+    async def get_item_name(self, item_hash: int) -> str:
+        """Get an item's name from its hash"""
+        item_details = await self.get_item_details(item_hash)
+        return item_details.get("name", f"Item {item_hash}")
+
+
+class XurApiError(Exception):
+    """Exception raised for Bungie API errors related to Xûr"""
+    pass
+
 
 @bot.tree.command(name="fact", description="Get a random fact.")
 async def fact_slash(interaction: discord.Interaction):
