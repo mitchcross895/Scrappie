@@ -10,7 +10,6 @@ from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, Button, Select
 from flask import Flask
-from openai import OpenAI
 from spellchecker import SpellChecker
 import randfacts    
 from dotenv import load_dotenv
@@ -27,9 +26,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # ========== Environment ==========
 load_dotenv()
 DISCORD_TOKEN  = os.getenv("DISCORD_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not all([DISCORD_TOKEN, OPENAI_API_KEY]):
+if not all([DISCORD_TOKEN]):
     logging.critical("Missing required environment variables.")
     exit(1)
 
@@ -244,15 +242,6 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
 async def fact_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f"Did you know? {randfacts.get_fact()}")
 
-@bot.tree.command(name="wiki", description="Search the Terraria Wiki for an entity page.")
-async def wiki_slash(interaction: discord.Interaction, query: str):
-    url  = f"https://terraria.wiki.gg/wiki/{query.replace(' ', '_')}"
-    resp = requests.get(url)
-    if resp.status_code == 200:
-        await interaction.response.send_message(f"Here's the page: {url}")
-    else:
-        await interaction.response.send_message(f"No page found for **{query}**.")
-
 @bot.tree.command(name="ping", description="Check the bot's latency.")
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message("pong")
@@ -280,22 +269,6 @@ async def trivia_slash(interaction: discord.Interaction):
         color=discord.Color.blue()
     )
     await interaction.followup.send(embed=embed, view=view)
-
-@bot.tree.command(name="ask", description="Ask OpenAI a question")
-async def ask_slash(interaction: discord.Interaction, question: str):
-    await interaction.response.defer()
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        resp   = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role":"user","content":question}],
-            max_tokens=50
-        )
-        await interaction.followup.send(resp.choices[0].message.content)
-    except Exception as e:
-        logging.error(f"OpenAI error: {e}")
-        await interaction.followup.send("Sorry, couldn't process that request.")
-\
 
 @bot.tree.command(name="weather", description="Look up the weather of your desired city.")
 async def weather_slash(interaction: discord.Interaction, city: str):

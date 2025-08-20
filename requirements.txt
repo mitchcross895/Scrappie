@@ -5,6 +5,5 @@ spotipy
 randfacts
 dotenv
 requests
-openai
 pyspellchecker
 python_weather
