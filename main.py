@@ -18,28 +18,9 @@ import python_weather
 import asyncio
 import datetime
 from python_weather.errors import Error, RequestError
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 
-# ========== Logging Configuration ==========
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-# ========== Environment ==========
-load_dotenv()
-DISCORD_TOKEN  = os.getenv("DISCORD_TOKEN")
-
-if not all([DISCORD_TOKEN]):
-    logging.critical("Missing required environment variables.")
-    exit(1)
-
-# ========== Flask App ==========
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "Discord Bot is Running!"
-
-# ========== Spell Checker ==========
-SPELL = SpellChecker()
-SPELL.word_frequency.load_text_file(os.path.join(os.path.dirname(__file__), "addedwords.txt"))
+# ========== Configuration Constants ==========
 MISSPELL_REPLIES = [
     "Let's try that again, shall we?",
     "Great spelling, numb-nuts!",
@@ -53,6 +34,46 @@ MISSPELL_REPLIES = [
     "Spell check is tapping out—maybe it's time for a lesson!"
 ]
 
+# Timeout configurations
+REQUEST_TIMEOUT = 10
+TRIVIA_TIMEOUT = 30
+SETUP_TIMEOUT = 60
+
+# Limits for security
+MAX_CITY_NAME_LENGTH = 100
+MIN_CITY_NAME_LENGTH = 1
+
+# ========== Logging Configuration ==========
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+# ========== Environment ==========
+load_dotenv()
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+
+if not DISCORD_TOKEN:
+    logger.critical("Missing DISCORD_TOKEN environment variable.")
+    exit(1)
+
+# Validate Discord token format (basic validation)
+if not re.match(r'^[A-Za-z0-9._-]+$', DISCORD_TOKEN):
+    logger.critical("Invalid Discord token format.")
+    exit(1)
+
+# ========== Flask App ==========
+app = Flask(__name__)
+
+@app.route('/')
+def home() -> str:
+    return "Discord Bot is Running!"
+
+# ========== Spell Checker ==========
+SPELL = SpellChecker()
+try:
+    SPELL.word_frequency.load_text_file(os.path.join(os.path.dirname(__file__), "addedwords.txt"))
+except FileNotFoundError:
+    logger.warning("addedwords.txt not found, using default dictionary only")
+
 # ========== Discord Bot Setup ==========
 intents = discord.Intents.default()
 intents.messages = True
@@ -61,8 +82,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ========== Trivia Classes ==========
 class TriviaView(View):
-    def __init__(self, user_id: int, options: list[str], correct: str, category: str, difficulty: str):
-        super().__init__(timeout=30)
+    def __init__(self, user_id: int, options: List[str], correct: str, category: str, difficulty: str):
+        super().__init__(timeout=TRIVIA_TIMEOUT)
         self.user_id = user_id
         self.correct = correct
         self.options = options
@@ -78,7 +99,10 @@ class TriviaView(View):
     def create_callback(self, idx: int, option: str):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.user_id:
-                return await interaction.response.send_message("This isn't your question! Start your own trivia with /trivia", ephemeral=True)
+                return await interaction.response.send_message(
+                    "This isn't your question! Start your own trivia with /trivia", 
+                    ephemeral=True
+                )
 
             for child in self.children:
                 child.disabled = True
@@ -100,30 +124,34 @@ class TriviaView(View):
             embed = discord.Embed(title=title, description=desc, color=color)
             embed.add_field(name="Difficulty", value=self.difficulty.capitalize())
             embed.add_field(name="Category", value=self.category)
+            
             await interaction.response.send_message(embed=embed)
             self.stop()
         return callback
 
-    async def on_timeout(self):
+    async def on_timeout(self) -> None:
         if self.message is None:
             return
+        
         for child in self.children:
             child.disabled = True
             if self.options[int(child.custom_id)-1] == self.correct:
                 child.style = discord.ButtonStyle.success
+        
         embed = self.message.embeds[0]
         embed.title = "⏰ Trivia Expired"
         embed.color = discord.Color.dark_gray()
+        
         try:
             await self.message.edit(embed=embed, view=self)
             await self.message.reply(f"Time's up! The correct answer was **{self.correct}**.")
         except Exception as e:
-            logging.error(f"Error updating expired trivia: {e}")
+            logger.error(f"Error updating expired trivia: {e}")
 
 class TriviaCategorySelect(discord.ui.Select):
-    def __init__(self, categories):
+    def __init__(self, categories: List[Dict[str, Any]]):
         options = [discord.SelectOption(label="Random", description="Any category", value="0")]
-        for category in categories[:24]:
+        for category in categories[:24]:  # Discord limit
             options.append(discord.SelectOption(label=category["name"], value=str(category["id"])))
         super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options)
 
@@ -138,8 +166,8 @@ class TriviaDifficultySelect(discord.ui.Select):
         super().__init__(placeholder="Select difficulty...", min_values=1, max_values=1, options=options)
 
 class TriviaSetupView(View):
-    def __init__(self, interaction: discord.Interaction, categories):
-        super().__init__(timeout=60)
+    def __init__(self, interaction: discord.Interaction, categories: List[Dict[str, Any]]):
+        super().__init__(timeout=SETUP_TIMEOUT)
         self.interaction = interaction
         self.category = "0"
         self.difficulty = "any"
@@ -156,38 +184,46 @@ class TriviaSetupView(View):
         self.start_button.callback = self.start_callback
         self.add_item(self.start_button)
     
-    async def category_callback(self, interaction: discord.Interaction):
+    async def category_callback(self, interaction: discord.Interaction) -> None:
         self.category = self.category_select.values[0]
         await interaction.response.defer()
 
-    async def difficulty_callback(self, interaction: discord.Interaction):
+    async def difficulty_callback(self, interaction: discord.Interaction) -> None:
         self.difficulty = self.difficulty_select.values[0]
         await interaction.response.defer()
 
-    async def start_callback(self, interaction: discord.Interaction):
+    async def start_callback(self, interaction: discord.Interaction) -> None:
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(view=self)
         await fetch_and_display_trivia(interaction, self.category, self.difficulty)
 
-    async def on_timeout(self):
+    async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
         try:
             await self.interaction.edit_original_response(view=self)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Could not update expired setup view: {e}")
 
 # ========== Trivia Functions ==========
-async def fetch_categories() -> list[dict[str, Any]]:
+async def fetch_categories() -> List[Dict[str, Any]]:
+    """Fetch trivia categories from API with fallback."""
     try:
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get("https://opentdb.com/api_category.php") as response:
                 if response.status == 200:
                     data = await response.json()
-                    return data.get("trivia_categories", [])
+                    categories = data.get("trivia_categories", [])
+                    logger.info(f"Fetched {len(categories)} trivia categories")
+                    return categories
+                else:
+                    logger.warning(f"Categories API returned status {response.status}")
     except Exception as e:
-        logging.warning(f"Using fallback categories: {e}")
+        logger.warning(f"Failed to fetch categories, using fallback: {e}")
+    
+    # Fallback categories
     return [
         {"id": 9,  "name": "General Knowledge"},
         {"id": 21, "name": "Sports"},
@@ -195,7 +231,8 @@ async def fetch_categories() -> list[dict[str, Any]]:
         {"id": 23, "name": "History"}
     ]
 
-async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any"):
+async def fetch_and_display_trivia(interaction: discord.Interaction, category_id: str = "0", difficulty: str = "any") -> None:
+    """Fetch and display a trivia question."""
     url = "https://opentdb.com/api.php?amount=1&type=multiple"
     if category_id != "0":
         url += f"&category={category_id}"
@@ -203,10 +240,13 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
         url += f"&difficulty={difficulty}"
 
     try:
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
                 if response.status != 200:
+                    logger.error(f"Trivia API returned status {response.status}")
                     return await interaction.followup.send("Trivia service is unavailable.")
+                
                 data = await response.json()
                 if data["response_code"] != 0 or not data["results"]:
                     return await interaction.followup.send("No trivia found. Try different settings.")
@@ -217,12 +257,15 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
                 incorrect = [html.unescape(a) for a in result["incorrect_answers"]]
                 category = result["category"]
                 difficulty = result["difficulty"]
+                
                 options = incorrect + [correct]
                 random.shuffle(options)
 
                 view = TriviaView(interaction.user.id, options, correct, category, difficulty)
+                
+                title = f"Trivia Time! ({difficulty.capitalize()})"
                 embed = discord.Embed(
-                    title=f"Trivia Time! ({difficulty.capitalize()})",
+                    title=title,
                     description=question,
                     color=discord.Color.blurple()
                 )
@@ -234,45 +277,81 @@ async def fetch_and_display_trivia(interaction, category_id="0", difficulty="any
 
                 msg = await interaction.followup.send(embed=embed, view=view)
                 view.message = msg
+                
+                logger.info(f"Trivia question sent to user {interaction.user}")
+                
+    except asyncio.TimeoutError:
+        logger.error("Trivia API request timed out")
+        await interaction.followup.send("Request timed out. Please try again.")
     except Exception as e:
-        logging.error(f"Trivia error: {e}")
+        logger.error(f"Trivia error: {e}")
         await interaction.followup.send("An error occurred. Please try again.")
 
+# ========== Bot Commands ==========
 @bot.tree.command(name="fact", description="Get a random fact.")
-async def fact_slash(interaction: discord.Interaction):
-    await interaction.response.send_message(f"Did you know? {randfacts.get_fact()}")
+async def fact_slash(interaction: discord.Interaction) -> None:
+    try:
+        fact = randfacts.get_fact()
+        await interaction.response.send_message(f"Did you know? {fact}")
+        logger.info(f"Fact command used by {interaction.user}")
+    except Exception as e:
+        logger.error(f"Error getting fact: {e}")
+        await interaction.response.send_message("Sorry, couldn't fetch a fact right now!")
 
 @bot.tree.command(name="ping", description="Check the bot's latency.")
-async def ping_slash(interaction: discord.Interaction):
-    await interaction.response.send_message("pong")
+async def ping_slash(interaction: discord.Interaction) -> None:
+    latency = round(bot.latency * 1000)
+    await interaction.response.send_message(f"Pong! Latency: {latency}ms")
 
 @bot.tree.command(name="number", description="Generate a random number between two values.")
-async def number_slash(interaction: discord.Interaction, min_num: int, max_num: int):
+async def number_slash(interaction: discord.Interaction, min_num: int, max_num: int) -> None:
     if min_num > max_num:
         return await interaction.response.send_message(
             "Invalid range! First number must be ≤ second.", ephemeral=True
         )
-    await interaction.response.send_message(f"Here is your number: {random.randint(min_num, max_num)}")
+    
+    result = random.randint(min_num, max_num)
+    await interaction.response.send_message(f"Here is your number: {result}")
 
 @bot.tree.command(name="coin", description="Flip a coin.")
-async def coin_slash(interaction: discord.Interaction):
-    await interaction.response.send_message("Heads" if random.randint(0,1)==0 else "Tails")
+async def coin_slash(interaction: discord.Interaction) -> None:
+    result = "Heads" if random.randint(0, 1) == 0 else "Tails"
+    await interaction.response.send_message(result)
 
 @bot.tree.command(name="trivia", description="Answer a multiple choice trivia question.")
-async def trivia_slash(interaction: discord.Interaction):
+async def trivia_slash(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
-    categories = await fetch_categories()
-    view       = TriviaSetupView(interaction, categories)
-    embed      = discord.Embed(
-        title="Trivia Setup",
-        description="Choose a category and difficulty for your trivia question!",
-        color=discord.Color.blue()
-    )
-    await interaction.followup.send(embed=embed, view=view)
+    
+    try:
+        categories = await fetch_categories()
+        view = TriviaSetupView(interaction, categories)
+        embed = discord.Embed(
+            title="Trivia Setup",
+            description="Choose a category and difficulty for your trivia question!",
+            color=discord.Color.blue()
+        )
+        await interaction.followup.send(embed=embed, view=view)
+        logger.info(f"Trivia setup shown to {interaction.user}")
+    except Exception as e:
+        logger.error(f"Error in trivia setup: {e}")
+        await interaction.followup.send("Sorry, couldn't start trivia right now!")
 
 @bot.tree.command(name="weather", description="Look up the weather of your desired city.")
-async def weather_slash(interaction: discord.Interaction, city: str):
+async def weather_slash(interaction: discord.Interaction, city: str) -> None:
+    # Input validation
+    if not city or len(city.strip()) < MIN_CITY_NAME_LENGTH:
+        return await interaction.response.send_message(
+            "Please provide a city name!", ephemeral=True
+        )
+    
+    if len(city) > MAX_CITY_NAME_LENGTH:
+        return await interaction.response.send_message(
+            "City name too long! Please use a shorter name.", ephemeral=True
+        )
+    
+    city = city.strip()
     await interaction.response.defer()
+    
     try:
         async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
             weather = await client.get(city)
@@ -280,9 +359,13 @@ async def weather_slash(interaction: discord.Interaction, city: str):
             if hasattr(weather.kind, "emoji"):
                 weather_emoji = weather.kind.emoji
         
+            # Build title and description separately for readability
+            title = f"{weather_emoji} Weather in {weather.location} - {weather.datetime.strftime('%A, %B %d')}"
+            description = f"**{weather.description}**, {weather.temperature}°F"
+            
             embed = discord.Embed(
-                title=f"{weather_emoji} Weather in {weather.location} - {weather.datetime.strftime('%A, %B %d')}",
-                description=f"**{weather.description}**, {weather.temperature}°F",
+                title=title,
+                description=description,
                 color=discord.Color.blue()
             )
             
@@ -335,7 +418,7 @@ async def weather_slash(interaction: discord.Interaction, city: str):
                     elif hasattr(day_forecast, 'kind'):
                         day_text += f"{day_forecast.kind}, "
                     
-                    logging.info(f"Day {i} forecast attributes: {dir(day_forecast)}")
+                    logger.debug(f"Day {i} forecast attributes: {dir(day_forecast)}")
                     
                     temp_high = None
                     if hasattr(day_forecast, 'highest'):
@@ -357,7 +440,7 @@ async def weather_slash(interaction: discord.Interaction, city: str):
                             day_text += f", Low: {temp_low}°F"
                     else:
                         attrs = vars(day_forecast)
-                        logging.info(f"Day {i} forecast dict: {attrs}")
+                        logger.debug(f"Day {i} forecast dict: {attrs}")
                         
                         for attr_name, attr_value in attrs.items():
                             if 'temp' in attr_name.lower() or 'high' in attr_name.lower() or 'low' in attr_name.lower():
@@ -370,20 +453,51 @@ async def weather_slash(interaction: discord.Interaction, city: str):
             embed.set_footer(text=f"Data provided by python_weather • {weather.datetime.strftime('%H:%M')}")
             
             await interaction.followup.send(embed=embed)
+            logger.info(f"Weather data sent for {city} to user {interaction.user}")
 
     except RequestError as e:
-        logging.error(f"Weather lookup error (status {e.status}): {str(e)}")
+        logger.error(f"Weather lookup error (status {e.status}): {str(e)}")
         await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Server returned status code: {e.status}")
     except Error as e:
-        logging.error(f"Weather lookup error: {str(e)}")
+        logger.error(f"Weather lookup error: {str(e)}")
         await interaction.followup.send(f"Error getting weather for '{city}': {str(e)}")
     except Exception as e:
-        logging.error(f"Unexpected error in weather command: {str(e)}")
+        logger.error(f"Unexpected error in weather command: {str(e)}")
         await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Please try a valid city name.")
 
-def start_discord_bot():
-    bot.run(DISCORD_TOKEN)
+# ========== Bot Events ==========
+@bot.event
+async def on_ready() -> None:
+    logger.info(f'{bot.user} has connected to Discord!')
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f'Synced {len(synced)} command(s)')
+    except Exception as e:
+        logger.error(f'Failed to sync commands: {e}')
 
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
+    logger.error(f'Command error: {error}')
+
+# ========== Bot Startup Function ==========
+def start_discord_bot() -> None:
+    """Start the Discord bot with proper error handling."""
+    try:
+        logger.info("Starting Discord bot...")
+        bot.run(DISCORD_TOKEN)
+    except discord.LoginFailure:
+        logger.critical("Invalid Discord token! Check your .env file.")
+        exit(1)
+    except discord.HTTPException as e:
+        logger.critical(f"Discord HTTP error: {e}")
+        exit(1)
+    except KeyboardInterrupt:
+        logger.info("Bot shutdown requested by user.")
+    except Exception as e:
+        logger.critical(f"Bot startup failed: {e}")
+        exit(1)
+
+# ========== Application Entry Points ==========
 if __name__ != "__main__":
     Thread(target=start_discord_bot, daemon=False).start()
 
