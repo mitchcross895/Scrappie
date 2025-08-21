@@ -42,8 +42,7 @@ SETUP_TIMEOUT = 60
 STEAM_API_TIMEOUT = 15
 
 # Steam API configuration
-STEAM_STORE_API = "https://store.steampowered.com/api/appdetails"
-STEAM_SEARCH_API = "https://steamcommunity.com/actions/SearchApps"
+STEAM_SEARCH_API = os.getenv("STEAM_SEARCH_API")
 
 # Limits for security
 MAX_CITY_NAME_LENGTH = 100
