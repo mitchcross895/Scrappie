@@ -7,4 +7,3 @@ dotenv
 requests
 pyspellchecker
 python_weather
-json
