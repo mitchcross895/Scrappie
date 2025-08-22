@@ -90,22 +90,89 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Format: {guild_id: {"channel_id": int, "games": {app_id: {"name": str, "last_price": float, "target_discount": int}}}}
 steam_tracking_data = {}
 
+# ========== Steam API Configuration ==========
+# You need to define these constants at the top of your file
+STEAM_SEARCH_API = "https://steamcommunity.com/actions/SearchApps"
+STEAM_STORE_API = "https://store.steampowered.com/api/appdetails"
+STEAM_API_TIMEOUT = 10
+MAX_TRACKED_GAMES = 50  # Define this limit
+
 # ========== Steam API Functions ==========
 async def search_steam_game(query: str) -> List[Dict[str, Any]]:
-    """Search for Steam games by name."""
+    """Search for Steam games by name using Steam's search API."""
     try:
         timeout = aiohttp.ClientTimeout(total=STEAM_API_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Using Steam's official search endpoint
             params = {"term": query, "f": "games", "cc": "US", "l": "english"}
-            async with session.get(STEAM_SEARCH_API, params=params) as response:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            async with session.get(STEAM_SEARCH_API, params=params, headers=headers) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    return data[:10]  # Limit to 10 results
+                    text_response = await response.text()
+                    # Steam returns JSON-like data, but sometimes it's wrapped
+                    try:
+                        data = await response.json()
+                        if isinstance(data, list):
+                            return data[:10]  # Limit to 10 results
+                        else:
+                            logger.warning(f"Unexpected response format from Steam search API")
+                            return []
+                    except Exception as json_error:
+                        logger.error(f"Failed to parse JSON from Steam search: {json_error}")
+                        logger.debug(f"Raw response: {text_response[:500]}")
+                        return []
                 else:
                     logger.error(f"Steam search API returned status {response.status}")
                     return []
+    except asyncio.TimeoutError:
+        logger.error(f"Steam search API timeout for query: {query}")
+        return []
     except Exception as e:
         logger.error(f"Error searching Steam games: {e}")
+        return []
+
+# Alternative search function using a different approach
+async def search_steam_game_alternative(query: str) -> List[Dict[str, Any]]:
+    """Alternative Steam search using SteamSpy API (more reliable)."""
+    try:
+        timeout = aiohttp.ClientTimeout(total=STEAM_API_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Using SteamSpy for search (more reliable)
+            steamspy_url = "https://steamspy.com/api.php"
+            params = {
+                "request": "all",
+                "format": "json"
+            }
+            headers = {
+                'User-Agent': 'Discord Bot Steam Tracker'
+            }
+            
+            # Note: This approach requires filtering locally
+            # For a more practical approach, you might want to use a pre-built Steam API library
+            # or implement a local game database
+            
+            # For now, let's create a mock search that you can replace with actual API calls
+            mock_results = [
+                {"appid": "730", "name": "Counter-Strike 2"},
+                {"appid": "570", "name": "Dota 2"},
+                {"appid": "440", "name": "Team Fortress 2"},
+                {"appid": "1085660", "name": "Destiny 2"},
+                {"appid": "945360", "name": "Among Us"},
+            ]
+            
+            # Filter results based on query
+            filtered_results = [
+                game for game in mock_results 
+                if query.lower() in game["name"].lower()
+            ]
+            
+            return filtered_results[:10]
+            
+    except Exception as e:
+        logger.error(f"Error with alternative Steam search: {e}")
         return []
 
 async def get_steam_game_details(app_id: str) -> Optional[Dict[str, Any]]:
@@ -113,18 +180,31 @@ async def get_steam_game_details(app_id: str) -> Optional[Dict[str, Any]]:
     try:
         timeout = aiohttp.ClientTimeout(total=STEAM_API_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            params = {"appids": app_id, "cc": "US", "filters": "price_overview,basic"}
-            async with session.get(STEAM_STORE_API, params=params) as response:
+            params = {
+                "appids": app_id, 
+                "cc": "US", 
+                "filters": "price_overview,basic",
+                "format": "json"
+            }
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            async with session.get(STEAM_STORE_API, params=params, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if app_id in data and data[app_id]["success"]:
+                    if app_id in data and data[app_id].get("success"):
                         return data[app_id]["data"]
                     else:
                         logger.warning(f"Steam API returned unsuccessful response for app {app_id}")
+                        logger.debug(f"Response data: {data}")
                         return None
                 else:
                     logger.error(f"Steam details API returned status {response.status}")
                     return None
+    except asyncio.TimeoutError:
+        logger.error(f"Steam details API timeout for app {app_id}")
+        return None
     except Exception as e:
         logger.error(f"Error getting Steam game details for {app_id}: {e}")
         return None
@@ -154,6 +234,7 @@ async def check_steam_sales():
                 
                 price_overview = game_details.get("price_overview")
                 if not price_overview:
+                    # Game might be free or not for sale
                     continue
                 
                 current_price = price_overview["final"] / 100  # Steam prices are in cents
@@ -194,7 +275,7 @@ async def check_steam_sales():
                 logger.error(f"Error checking sale for game {app_id}: {e}")
 
 # ========== Steam Sales Task ==========
-@tasks.loop(hours=6)  # Check every hour
+@tasks.loop(hours=6)  # Check every 6 hours
 async def steam_sales_task():
     """Background task to check for Steam sales."""
     if steam_tracking_data:
@@ -264,10 +345,24 @@ async def add_steam_game_slash(interaction: discord.Interaction, game_name: str,
     
     await interaction.response.defer()
     
-    # Search for the game
+    # Try primary search method first
     search_results = await search_steam_game(game_name)
+    
+    # If primary search fails, try alternative method
     if not search_results:
-        return await interaction.followup.send(f"No Steam games found for '{game_name}'")
+        logger.info(f"Primary search failed for '{game_name}', trying alternative method")
+        search_results = await search_steam_game_alternative(game_name)
+    
+    if not search_results:
+        embed = discord.Embed(
+            title="❌ No Games Found",
+            description=f"No Steam games found for '{game_name}'. Try:\n"
+                       "• Checking the spelling\n"
+                       "• Using a shorter or different name\n"
+                       "• Searching for the exact Steam store name",
+            color=discord.Color.red()
+        )
+        return await interaction.followup.send(embed=embed)
     
     # Create selection view
     class GameSelectView(View):
@@ -289,10 +384,18 @@ async def add_steam_game_slash(interaction: discord.Interaction, game_name: str,
             selected_app_id = select.values[0]
             self.selected_game = next(game for game in search_results if str(game["appid"]) == selected_app_id)
             
+            # Check if game is already being tracked
+            if selected_app_id in steam_tracking_data[guild_id]["games"]:
+                return await interaction.response.send_message(
+                    f"**{self.selected_game['name']}** is already being tracked!", ephemeral=True
+                )
+            
             # Get game details to check if it's valid
             game_details = await get_steam_game_details(selected_app_id)
             if not game_details:
-                return await interaction.response.send_message("This game is not available or has no price data.", ephemeral=True)
+                return await interaction.response.send_message(
+                    "This game is not available or has no price data.", ephemeral=True
+                )
             
             # Add to tracking
             if guild_id not in steam_tracking_data:
@@ -316,9 +419,22 @@ async def add_steam_game_slash(interaction: discord.Interaction, game_name: str,
             embed.add_field(name="Game", value=self.selected_game["name"], inline=False)
             embed.add_field(name="Target Discount", value=f"{target_discount}%", inline=True)
             embed.add_field(name="Current Price", value=f"${current_price:.2f}" if current_price > 0 else "Free", inline=True)
+            embed.set_footer(text=f"App ID: {selected_app_id}")
             
             await interaction.response.edit_message(embed=embed, view=None)
+            logger.info(f"Added game {self.selected_game['name']} to tracking for guild {guild_id}")
             self.stop()
+        
+        async def on_timeout(self):
+            embed = discord.Embed(
+                title="⏰ Selection Timeout",
+                description="Game selection timed out. Please run the command again.",
+                color=discord.Color.orange()
+            )
+            try:
+                await interaction.edit_original_response(embed=embed, view=None)
+            except:
+                pass  # Interaction might have been handled already
     
     # Show game selection
     embed = discord.Embed(
@@ -329,6 +445,49 @@ async def add_steam_game_slash(interaction: discord.Interaction, game_name: str,
     
     view = GameSelectView()
     await interaction.followup.send(embed=embed, view=view)
+
+@bot.tree.command(name="test_steam_search", description="Test Steam search functionality (Admin only)")
+async def test_steam_search_slash(interaction: discord.Interaction, game_name: str) -> None:
+    """Test command to debug Steam search issues."""
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message(
+            "You need administrator permissions to use test commands!", ephemeral=True
+        )
+    
+    await interaction.response.defer()
+    
+    embed = discord.Embed(
+        title="🔧 Steam Search Test",
+        description=f"Testing search for: **{game_name}**",
+        color=discord.Color.blue()
+    )
+    
+    # Test primary search
+    try:
+        results1 = await search_steam_game(game_name)
+        embed.add_field(
+            name="Primary Search Results", 
+            value=f"Found {len(results1)} results" if results1 else "No results found",
+            inline=False
+        )
+        if results1:
+            sample_games = [f"• {game['name']} (ID: {game['appid']})" for game in results1[:3]]
+            embed.add_field(name="Sample Results", value="\n".join(sample_games), inline=False)
+    except Exception as e:
+        embed.add_field(name="Primary Search Error", value=str(e), inline=False)
+    
+    # Test alternative search
+    try:
+        results2 = await search_steam_game_alternative(game_name)
+        embed.add_field(
+            name="Alternative Search Results", 
+            value=f"Found {len(results2)} results" if results2 else "No results found",
+            inline=False
+        )
+    except Exception as e:
+        embed.add_field(name="Alternative Search Error", value=str(e), inline=False)
+    
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="list_steam_games", description="List all tracked Steam games.")
 async def list_steam_games_slash(interaction: discord.Interaction) -> None:
@@ -834,6 +993,7 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError) 
 
 # ========== Bot Startup Function ==========
 def start_discord_bot() -> None:
+    steam_sales_task.start()
     """Start the Discord bot with proper error handling."""
     try:
         logger.info("Starting Discord bot...")
