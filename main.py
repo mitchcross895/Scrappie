@@ -41,9 +41,6 @@ TRIVIA_TIMEOUT = 30
 SETUP_TIMEOUT = 60
 STEAM_API_TIMEOUT = 15
 
-# Steam API configuration
-STEAM_SEARCH_API = os.getenv("STEAM_SEARCH_API")
-
 # Limits for security
 MAX_CITY_NAME_LENGTH = 100
 MIN_CITY_NAME_LENGTH = 1
@@ -91,11 +88,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 steam_tracking_data = {}
 
 # ========== Steam API Configuration ==========
-# You need to define these constants at the top of your file
 STEAM_SEARCH_API = "https://steamcommunity.com/actions/SearchApps"
 STEAM_STORE_API = "https://store.steampowered.com/api/appdetails"
-STEAM_API_TIMEOUT = 10
-MAX_TRACKED_GAMES = 50  # Define this limit
 
 # ========== Steam API Functions ==========
 async def search_steam_game(query: str) -> List[Dict[str, Any]]:
@@ -136,40 +130,29 @@ async def search_steam_game(query: str) -> List[Dict[str, Any]]:
 
 # Alternative search function using a different approach
 async def search_steam_game_alternative(query: str) -> List[Dict[str, Any]]:
-    """Alternative Steam search using SteamSpy API (more reliable)."""
+    """Alternative Steam search using mock data (replace with real API)."""
     try:
-        timeout = aiohttp.ClientTimeout(total=STEAM_API_TIMEOUT)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            # Using SteamSpy for search (more reliable)
-            steamspy_url = "https://steamspy.com/api.php"
-            params = {
-                "request": "all",
-                "format": "json"
-            }
-            headers = {
-                'User-Agent': 'Discord Bot Steam Tracker'
-            }
-            
-            # Note: This approach requires filtering locally
-            # For a more practical approach, you might want to use a pre-built Steam API library
-            # or implement a local game database
-            
-            # For now, let's create a mock search that you can replace with actual API calls
-            mock_results = [
-                {"appid": "730", "name": "Counter-Strike 2"},
-                {"appid": "570", "name": "Dota 2"},
-                {"appid": "440", "name": "Team Fortress 2"},
-                {"appid": "1085660", "name": "Destiny 2"},
-                {"appid": "945360", "name": "Among Us"},
-            ]
-            
-            # Filter results based on query
-            filtered_results = [
-                game for game in mock_results 
-                if query.lower() in game["name"].lower()
-            ]
-            
-            return filtered_results[:10]
+        # Mock search results for testing - replace with actual API implementation
+        mock_results = [
+            {"appid": "730", "name": "Counter-Strike 2"},
+            {"appid": "570", "name": "Dota 2"},
+            {"appid": "440", "name": "Team Fortress 2"},
+            {"appid": "1085660", "name": "Destiny 2"},
+            {"appid": "945360", "name": "Among Us"},
+            {"appid": "271590", "name": "Grand Theft Auto V"},
+            {"appid": "578080", "name": "PLAYERUNKNOWN'S BATTLEGROUNDS"},
+            {"appid": "1174180", "name": "Red Dead Redemption 2"},
+            {"appid": "292030", "name": "The Witcher 3: Wild Hunt"},
+            {"appid": "1091500", "name": "Cyberpunk 2077"},
+        ]
+        
+        # Filter results based on query
+        filtered_results = [
+            game for game in mock_results 
+            if query.lower() in game["name"].lower()
+        ]
+        
+        return filtered_results[:10]
             
     except Exception as e:
         logger.error(f"Error with alternative Steam search: {e}")
@@ -484,6 +467,9 @@ async def test_steam_search_slash(interaction: discord.Interaction, game_name: s
             value=f"Found {len(results2)} results" if results2 else "No results found",
             inline=False
         )
+        if results2:
+            sample_games = [f"• {game['name']} (ID: {game['appid']})" for game in results2[:3]]
+            embed.add_field(name="Sample Alternative Results", value="\n".join(sample_games), inline=False)
     except Exception as e:
         embed.add_field(name="Alternative Search Error", value=str(e), inline=False)
     
@@ -637,75 +623,6 @@ class TriviaView(View):
         return callback
 
     async def on_timeout(self) -> None:
-        if self.message is None:
-            return
-        
-        for child in self.children:
-            child.disabled = True
-            if self.options[int(child.custom_id)-1] == self.correct:
-                child.style = discord.ButtonStyle.success
-        
-        embed = self.message.embeds[0]
-        embed.title = "⏰ Trivia Expired"
-        embed.color = discord.Color.dark_gray()
-        
-        try:
-            await self.message.edit(embed=embed, view=self)
-            await self.message.reply(f"Time's up! The correct answer was **{self.correct}**.")
-        except Exception as e:
-            logger.error(f"Error updating expired trivia: {e}")
-
-class TriviaCategorySelect(discord.ui.Select):
-    def __init__(self, categories: List[Dict[str, Any]]):
-        options = [discord.SelectOption(label="Random", description="Any category", value="0")]
-        for category in categories[:24]:  # Discord limit
-            options.append(discord.SelectOption(label=category["name"], value=str(category["id"])))
-        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options)
-
-class TriviaDifficultySelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="Random", value="any"),
-            discord.SelectOption(label="Easy", value="easy"),
-            discord.SelectOption(label="Medium", value="medium"),
-            discord.SelectOption(label="Hard", value="hard")
-        ]
-        super().__init__(placeholder="Select difficulty...", min_values=1, max_values=1, options=options)
-
-class TriviaSetupView(View):
-    def __init__(self, interaction: discord.Interaction, categories: List[Dict[str, Any]]):
-        super().__init__(timeout=SETUP_TIMEOUT)
-        self.interaction = interaction
-        self.category = "0"
-        self.difficulty = "any"
-
-        self.category_select = TriviaCategorySelect(categories)
-        self.category_select.callback = self.category_callback
-        self.add_item(self.category_select)
-
-        self.difficulty_select = TriviaDifficultySelect()
-        self.difficulty_select.callback = self.difficulty_callback
-        self.add_item(self.difficulty_select)
-
-        self.start_button = Button(label="Start Trivia", style=discord.ButtonStyle.success)
-        self.start_button.callback = self.start_callback
-        self.add_item(self.start_button)
-    
-    async def category_callback(self, interaction: discord.Interaction) -> None:
-        self.category = self.category_select.values[0]
-        await interaction.response.defer()
-
-    async def difficulty_callback(self, interaction: discord.Interaction) -> None:
-        self.difficulty = self.difficulty_select.values[0]
-        await interaction.response.defer()
-
-    async def start_callback(self, interaction: discord.Interaction) -> None:
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-        await fetch_and_display_trivia(interaction, self.category, self.difficulty)
-
-    async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
         try:
@@ -853,11 +770,6 @@ async def weather_slash(interaction: discord.Interaction, city: str) -> None:
     
     if len(city) > MAX_CITY_NAME_LENGTH:
         return await interaction.response.send_message(
-            "Please provide a city name!", ephemeral=True
-        )
-    
-    if len(city) > MAX_CITY_NAME_LENGTH:
-        return await interaction.response.send_message(
             "City name too long! Please use a shorter name.", ephemeral=True
         )
     
@@ -986,6 +898,11 @@ async def on_ready() -> None:
         logger.info(f'Synced {len(synced)} command(s)')
     except Exception as e:
         logger.error(f'Failed to sync commands: {e}')
+    
+    # Start the Steam sales task AFTER the bot is ready
+    if not steam_sales_task.is_running():
+        steam_sales_task.start()
+        logger.info("Started Steam sales monitoring task")
 
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
@@ -993,7 +910,6 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError) 
 
 # ========== Bot Startup Function ==========
 def start_discord_bot() -> None:
-    steam_sales_task.start()
     """Start the Discord bot with proper error handling."""
     try:
         logger.info("Starting Discord bot...")
@@ -1026,3 +942,75 @@ if __name__ == "__main__":
         ),
         daemon=False
     ).start()
+    
+    # Start Discord bot in main thread when running directly
+    start_discord_bot()
+        if self.message is None:
+            return
+        
+        for child in self.children:
+            child.disabled = True
+            if self.options[int(child.custom_id)-1] == self.correct:
+                child.style = discord.ButtonStyle.success
+        
+        embed = self.message.embeds[0]
+        embed.title = "⏰ Trivia Expired"
+        embed.color = discord.Color.dark_gray()
+        
+        try:
+            await self.message.edit(embed=embed, view=self)
+            await self.message.reply(f"Time's up! The correct answer was **{self.correct}**.")
+        except Exception as e:
+            logger.error(f"Error updating expired trivia: {e}")
+
+class TriviaCategorySelect(discord.ui.Select):
+    def __init__(self, categories: List[Dict[str, Any]]):
+        options = [discord.SelectOption(label="Random", description="Any category", value="0")]
+        for category in categories[:24]:  # Discord limit
+            options.append(discord.SelectOption(label=category["name"], value=str(category["id"])))
+        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options)
+
+class TriviaDifficultySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Random", value="any"),
+            discord.SelectOption(label="Easy", value="easy"),
+            discord.SelectOption(label="Medium", value="medium"),
+            discord.SelectOption(label="Hard", value="hard")
+        ]
+        super().__init__(placeholder="Select difficulty...", min_values=1, max_values=1, options=options)
+
+class TriviaSetupView(View):
+    def __init__(self, interaction: discord.Interaction, categories: List[Dict[str, Any]]):
+        super().__init__(timeout=SETUP_TIMEOUT)
+        self.interaction = interaction
+        self.category = "0"
+        self.difficulty = "any"
+
+        self.category_select = TriviaCategorySelect(categories)
+        self.category_select.callback = self.category_callback
+        self.add_item(self.category_select)
+
+        self.difficulty_select = TriviaDifficultySelect()
+        self.difficulty_select.callback = self.difficulty_callback
+        self.add_item(self.difficulty_select)
+
+        self.start_button = Button(label="Start Trivia", style=discord.ButtonStyle.success)
+        self.start_button.callback = self.start_callback
+        self.add_item(self.start_button)
+    
+    async def category_callback(self, interaction: discord.Interaction) -> None:
+        self.category = self.category_select.values[0]
+        await interaction.response.defer()
+
+    async def difficulty_callback(self, interaction: discord.Interaction) -> None:
+        self.difficulty = self.difficulty_select.values[0]
+        await interaction.response.defer()
+
+    async def start_callback(self, interaction: discord.Interaction) -> None:
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await fetch_and_display_trivia(interaction, self.category, self.difficulty)
+
+    async def on_timeout(self) -> None:
