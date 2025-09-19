@@ -8,3 +8,4 @@ requests
 pyspellchecker
 python_weather
 yt-dlp
+PyNaCl
