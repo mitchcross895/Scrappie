@@ -11,7 +11,6 @@ import json
 import signal
 import sys
 from pathlib import Path
-import PyNaCl
 
 # Third-party imports
 import discord
