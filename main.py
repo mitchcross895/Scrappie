@@ -7,6 +7,7 @@ from typing import Dict, Optional, Any, List, Union
 import asyncio
 import datetime
 from threading import Thread
+from collections import deque
 import json
 import signal
 import sys
@@ -304,26 +305,6 @@ def rate_limit(func):
 
 # ========== Enhanced Music System ==========
 if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
-    class MusicSource(discord.PCMVolumeTransformer):
-        def __init__(self, source, *, data, volume=0.5):
-            super().__init__(source, volume)
-            self.data = data
-            self.title = data.get('title')
-            self.url = data.get('url')
-            self.duration = data.get('duration')
-            self.uploader = data.get('uploader')
-
-        @classmethod
-        async def from_url(cls, url, *, loop=None, stream=False):
-            loop = loop or asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
-
-            if 'entries' in data:
-                data = data['entries'][0]
-
-            filename = data['url'] if stream else ytdl.prepare_filename(data)
-            return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
-
     # YouTube-DL configuration
     ytdl_format_options = {
         'format': 'bestaudio/best',
@@ -337,12 +318,6 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         'no_warnings': True,
         'default_search': 'auto',
         'source_address': '0.0.0.0'
-    }
-
-    ffmpeg_options = {
-        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-        'options': '-vn',
-        'executable': 'Discord-Bot\\bin\\ffmpeg.exe'
     }
 
     ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
@@ -741,92 +716,118 @@ async def help_command(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
+# Add collections import at the top for deque
+from collections import deque
+
+# Update bot state to use deque for song queues
+class BotState:
+    """Centralized bot state management."""
+    def __init__(self):
+        self.start_time = datetime.datetime.utcnow()
+        self.http_session: Optional[aiohttp.ClientSession] = None
+        self.spell_checker = None
+        self.music_queues: Dict[str, deque] = {}  # Guild ID -> deque of songs
+        self.request_counts: Dict[int, List] = {}  # User ID -> [timestamps]
+
+# Add the search function for yt-dlp
+async def search_ytdlp_async(query, ydl_opts):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _extract(query, ydl_opts))
+
+def _extract(query, ydl_opts):
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(query, download=False)
+
 # Music commands (only if yt-dlp and voice are available)
 if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
     @bot.tree.command(name="play", description="Play a song or add it to the queue.")
-    @app_commands.describe(query="Song name or YouTube URL")
+    @app_commands.describe(song_query="Search query")
     @rate_limit
-    async def play_command(interaction: discord.Interaction, query: str):
-        """Enhanced play command with better error handling."""
-        if len(query) > Config.MAX_SONG_QUERY_LENGTH:
-            return await interaction.response.send_message(
-                "❌ Song query too long! Please use a shorter search term.", 
-                ephemeral=True
-            )
-        
-        if not interaction.user.voice:
-            return await interaction.response.send_message(
-                "❌ You need to be in a voice channel to play music!", 
-                ephemeral=True
-            )
-        
+    async def play_command(interaction: discord.Interaction, song_query: str):
         await interaction.response.defer()
         
+        voice_channel = interaction.user.voice
+        if voice_channel is None or voice_channel.channel is None:
+            await interaction.followup.send("You must be in a voice channel.")
+            return
+        
+        voice_channel = voice_channel.channel
+        voice_client = interaction.guild.voice_client
+        
+        if voice_client is None:
+            voice_client = await voice_channel.connect()
+        elif voice_channel != voice_client.channel:
+            await voice_client.move_to(voice_channel)
+        
+        ydl_options = {
+            "format": "bestaudio[abr<=96]/bestaudio",
+            "noplaylist": True,
+            "youtube_include_dash_manifest": False,
+            "youtube_include_hls_manifest": False,
+        }
+        
+        query = "ytsearch1: " + song_query
+        
         try:
-            voice_channel = interaction.user.voice.channel
-            voice_client = interaction.guild.voice_client
+            results = await search_ytdlp_async(query, ydl_options)
+            tracks = results.get("entries", [])
             
-            if voice_client is None:
-                voice_client = await voice_channel.connect()
-                logger.info(f"Connected to voice channel: {voice_channel.name}")
-            elif voice_channel != voice_client.channel:
-                await voice_client.move_to(voice_channel)
-                logger.info(f"Moved to voice channel: {voice_channel.name}")
+            if not tracks:
+                await interaction.followup.send("No results found.")
+                return
             
-            # Search for the song
-            embed = create_embed("🔍 Searching...", f"Looking for: **{query}**", discord.Color.yellow())
-            await interaction.edit_original_response(embed=embed)
+            first_track = tracks[0]
+            audio_url = first_track["url"]
+            title = first_track.get("title", "Untitled")
             
-            source = await MusicSource.from_url(query, loop=bot.loop, stream=True)
+            guild_id = str(interaction.guild_id)
+            if guild_id not in bot_state.music_queues:
+                bot_state.music_queues[guild_id] = deque()
             
-            if voice_client.is_playing():
-                # Add to queue (basic implementation)
-                guild_id = interaction.guild.id
-                if guild_id not in bot_state.music_queues:
-                    bot_state.music_queues[guild_id] = []
-                bot_state.music_queues[guild_id].append((source, interaction.user))
-                
-                embed = create_embed(
-                    "📝 Added to Queue",
-                    f"**{source.title}** has been added to the queue.",
-                    discord.Color.green()
-                )
+            bot_state.music_queues[guild_id].append((audio_url, title))
+            
+            if voice_client.is_playing() or voice_client.is_paused():
+                await interaction.followup.send(f"Added to queue: **{title}**")
             else:
-                voice_client.play(source)
-                embed = create_embed(
-                    "🎵 Now Playing",
-                    f"**{source.title}**",
-                    discord.Color.green()
-                )
+                await interaction.followup.send(f"Now playing: **{title}**")
+                await play_next_song(voice_client, guild_id, interaction.channel)
                 
-                if source.duration:
-                    embed.add_field(
-                        name="Duration", 
-                        value=format_duration(source.duration), 
-                        inline=True
-                    )
-                if source.uploader:
-                    embed.add_field(
-                        name="Uploader", 
-                        value=source.uploader, 
-                        inline=True
-                    )
-            
-            embed.set_footer(
-                text=f"Requested by {interaction.user.display_name}",
-                icon_url=interaction.user.display_avatar.url
-            )
-            
-            await interaction.edit_original_response(embed=embed)
-            
         except Exception as e:
             logger.error(f"Error in play command: {e}")
-            embed = create_embed(
-                "❌ Playback Error",
-                "Sorry, I couldn't play that song. Please try a different search term.",
-                discord.Color.red()
-            )
-            await interaction.edit_original_response(embed=embed)
+            await interaction.followup.send("Sorry, I couldn't play that song. Please try a different search term.")
+
+async def play_next_song(voice_client, guild_id, channel):
+    """Play the next song in the queue."""
+    if guild_id in bot_state.music_queues and bot_state.music_queues[guild_id]:
+        audio_url, title = bot_state.music_queues[guild_id].popleft()
+        
+        ffmpeg_options = {
+            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            "options": "-vn -c:a libopus -b:a 96k",
+        }
+        
+        source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="bin/ffmpeg.exe")
+        
+        def after_play(error):
+            if error:
+                logger.error(f"Error playing {title}: {error}")
+            asyncio.run_coroutine_threadsafe(play_next_song(voice_client, guild_id, channel), bot.loop)
+        
+        voice_client.play(source, after=after_play)
+        
+        # Send now playing message
+        try:
+            await channel.send(f"Now playing: **{title}**")
+        except Exception as e:
+            logger.error(f"Error sending now playing message: {e}")
+    else:
+        # No more songs in queue, disconnect
+        try:
+            await voice_client.disconnect()
+            if guild_id in bot_state.music_queues:
+                bot_state.music_queues[guild_id].clear()
+        except Exception as e:
+            logger.error(f"Error disconnecting voice client: {e}")
     
     @bot.tree.command(name="stop", description="Stop the current song and clear the queue.")
     async def stop_command(interaction: discord.Interaction):
