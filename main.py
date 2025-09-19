@@ -8,6 +8,7 @@ import asyncio
 import datetime
 from threading import Thread
 import json
+import yt_dlp
 
 # Third-party imports
 import discord
@@ -133,6 +134,14 @@ async def safe_api_request(url: str, params: dict = None) -> Optional[dict]:
     except Exception as e:
         logger.error(f"API request error for {url}: {e}")
         return None
+    
+async def search_ytdlp_async(query, ydl_opts):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _extract(query, ydl_opts))
+
+def _extract(query, ydl_opts):
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(query, download=False)
 
 # ========== Trivia Classes ==========
 class TriviaView(View):
@@ -325,6 +334,52 @@ async def fetch_and_display_trivia(interaction: discord.Interaction, category_id
     logger.info(f"Trivia question sent to user {interaction.user}")
 
 # ========== Basic Bot Commands ==========
+@bot.tree.command(name="play", description="Play a song or add it to the queue.")
+@app_commands.describe(song_query="search query")
+async def play(interaction: discord.Interaction, song_query: str):
+    await interaction.response.defer()
+
+    voice_channel = interaction.user.voice.channel
+
+    if voice_channel is None:
+        await interaction.followup.send("You need to be in a voice channel to play music!")
+        return
+    
+    voice_client = interaction.guild.voice_client
+
+    if voice_client is None:
+        voice_client = await voice_channel.connect()
+    elif voice_channel != voice_client.channel:
+        await voice_client.move_to(voice_channel)
+
+    ydl_options = {
+        "format": "bestaudio[abr<=96]/bestaudio",
+        "noplaylist": True,
+        "youtube_include_dash_manifest": False,
+        "youtube_include_hls_manifest": False,
+    }
+
+    query = "ytsearch: " + song_query
+    results = await search_ytdlp_async(query, ydl_options)
+    tracks = results.get("entries", [])
+
+    if tracks is None:
+        await interaction.followup.send("No results found.")
+        return
+
+    first_track = tracks[0]
+    audio_url = first_track("url")
+    title = first_track.get("title", "Untitled")
+
+    ffmpeg_options = {
+        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        "options": "-vn -c:a libopus -b:a 96k",
+    }
+
+    source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="bin\\ffmpeg.exe")
+
+    voice_client.play(source)
+
 @bot.tree.command(name="fact", description="Get a random fact.")
 async def fact_slash(interaction: discord.Interaction) -> None:
     try:
