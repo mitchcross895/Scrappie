@@ -3,12 +3,14 @@ import re
 import logging
 import random
 import html
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Union
 import asyncio
 import datetime
 from threading import Thread
 import json
-import yt_dlp
+import signal
+import sys
+from pathlib import Path
 
 # Third-party imports
 import discord
@@ -16,30 +18,46 @@ import aiohttp
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, Button, Select
-from flask import Flask
+from flask import Flask, jsonify
 from spellchecker import SpellChecker
-import randfacts    
+import randfacts
 from dotenv import load_dotenv
 import python_weather
 from python_weather.errors import Error, RequestError
 
+try:
+    import yt_dlp
+    YT_DLP_AVAILABLE = True
+except ImportError:
+    YT_DLP_AVAILABLE = False
+    logging.warning("yt-dlp not available. Music functionality will be disabled.")
+
 # ========== Configuration Constants ==========
 class Config:
+    """Centralized configuration management."""
     # Timeout configurations
-    REQUEST_TIMEOUT = 10
+    REQUEST_TIMEOUT = 15
     TRIVIA_TIMEOUT = 30
     SETUP_TIMEOUT = 60
     
     # Limits for security
     MAX_CITY_NAME_LENGTH = 100
     MIN_CITY_NAME_LENGTH = 1
+    MAX_SONG_QUERY_LENGTH = 200
     
-    # Trivia API
+    # API URLs
     TRIVIA_CATEGORIES_API = "https://opentdb.com/api_category.php"
     TRIVIA_API = "https://opentdb.com/api.php?amount=1&type=multiple"
     
     # User agent for API requests
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    
+    # File paths
+    ADDED_WORDS_FILE = "addedwords.txt"
+    LOG_FILE = "bot.log"
+    
+    # Rate limiting
+    MAX_REQUESTS_PER_MINUTE = 30
 
 # Response constants
 MISSPELL_REPLIES = [
@@ -55,76 +73,189 @@ MISSPELL_REPLIES = [
     "Spell check is tapping out—maybe it's time for a lesson!"
 ]
 
-# ========== Logging Configuration ==========
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
+# ========== Enhanced Logging Configuration ==========
+def setup_logging():
+    """Setup comprehensive logging configuration."""
+    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    
+    # Create logs directory if it doesn't exist
+    Path("logs").mkdir(exist_ok=True)
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=logging.INFO,
+        format=log_format,
+        handlers=[
+            logging.FileHandler(f"logs/{Config.LOG_FILE}"),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    # Set specific loggers
+    logging.getLogger("discord").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 # ========== Environment Setup ==========
 load_dotenv()
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-if not DISCORD_TOKEN:
-    logger.critical("Missing DISCORD_TOKEN environment variable.")
-    exit(1)
+def validate_environment():
+    """Validate required environment variables."""
+    token = os.getenv("DISCORD_TOKEN")
+    
+    if not token:
+        logger.critical("Missing DISCORD_TOKEN environment variable.")
+        sys.exit(1)
+    
+    if not re.match(r'^[A-Za-z0-9._-]+$', token):
+        logger.critical("Invalid Discord token format.")
+        sys.exit(1)
+    
+    return token
 
-if not re.match(r'^[A-Za-z0-9._-]+$', DISCORD_TOKEN):
-    logger.critical("Invalid Discord token format.")
-    exit(1)
+DISCORD_TOKEN = validate_environment()
 
-# ========== Flask App ==========
+# ========== Enhanced Flask App ==========
 app = Flask(__name__)
 
 @app.route('/')
 def home() -> str:
-    return "Discord Bot is Running!"
+    return jsonify({
+        "status": "online",
+        "bot_name": "Discord Bot",
+        "version": "2.0",
+        "timestamp": datetime.datetime.utcnow().isoformat()
+    })
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring."""
+    return jsonify({
+        "status": "healthy",
+        "uptime": str(datetime.datetime.utcnow() - start_time) if 'start_time' in globals() else "unknown"
+    })
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Not found"}), 404
 
 # ========== Global Instances ==========
-# Spell checker setup
-SPELL = SpellChecker()
-try:
-    SPELL.word_frequency.load_text_file(os.path.join(os.path.dirname(__file__), "addedwords.txt"))
-except FileNotFoundError:
-    logger.warning("addedwords.txt not found, using default dictionary only")
+class BotState:
+    """Centralized bot state management."""
+    def __init__(self):
+        self.start_time = datetime.datetime.utcnow()
+        self.http_session: Optional[aiohttp.ClientSession] = None
+        self.spell_checker = None
+        self.music_queues: Dict[int, List] = {}  # Guild ID -> Queue
+        self.request_counts: Dict[int, List] = {}  # User ID -> [timestamps]
+        
+    async def initialize(self):
+        """Initialize async components."""
+        await self.get_http_session()
+        self.setup_spell_checker()
+    
+    def setup_spell_checker(self):
+        """Setup spell checker with custom words."""
+        self.spell_checker = SpellChecker()
+        try:
+            words_file = Path(Config.ADDED_WORDS_FILE)
+            if words_file.exists():
+                self.spell_checker.word_frequency.load_text_file(str(words_file))
+                logger.info(f"Loaded custom words from {Config.ADDED_WORDS_FILE}")
+        except Exception as e:
+            logger.warning(f"Could not load custom words: {e}")
+    
+    async def get_http_session(self) -> aiohttp.ClientSession:
+        """Get or create HTTP session for reuse."""
+        if self.http_session is None or self.http_session.closed:
+            timeout = aiohttp.ClientTimeout(total=Config.REQUEST_TIMEOUT)
+            self.http_session = aiohttp.ClientSession(
+                timeout=timeout,
+                headers={'User-Agent': Config.USER_AGENT}
+            )
+        return self.http_session
+    
+    async def cleanup(self):
+        """Clean up resources."""
+        if self.http_session and not self.http_session.closed:
+            await self.http_session.close()
+            logger.info("HTTP session closed")
+    
+    def is_rate_limited(self, user_id: int) -> bool:
+        """Check if user is rate limited."""
+        now = datetime.datetime.utcnow()
+        if user_id not in self.request_counts:
+            self.request_counts[user_id] = []
+        
+        # Clean old requests
+        cutoff = now - datetime.timedelta(minutes=1)
+        self.request_counts[user_id] = [
+            ts for ts in self.request_counts[user_id] if ts > cutoff
+        ]
+        
+        if len(self.request_counts[user_id]) >= Config.MAX_REQUESTS_PER_MINUTE:
+            return True
+        
+        self.request_counts[user_id].append(now)
+        return False
+
+# Initialize bot state
+bot_state = BotState()
+start_time = bot_state.start_time
 
 # Discord bot setup
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.guilds = True
+intents.voice_states = True
 
-# HTTP session for reuse
-http_session: Optional[aiohttp.ClientSession] = None
-
-async def get_http_session() -> aiohttp.ClientSession:
-    """Get or create HTTP session for reuse."""
-    global http_session
-    if http_session is None or http_session.closed:
-        timeout = aiohttp.ClientTimeout(total=Config.REQUEST_TIMEOUT)
-        http_session = aiohttp.ClientSession(
-            timeout=timeout,
-            headers={'User-Agent': Config.USER_AGENT}
-        )
-    return http_session
-
-async def cleanup_http_session():
-    """Clean up HTTP session."""
-    global http_session
-    if http_session and not http_session.closed:
-        await http_session.close()
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    help_command=None,  # We'll create a custom one
+    case_insensitive=True
+)
 
 # ========== Utility Functions ==========
-def create_embed(title: str, description: str = None, color: discord.Color = discord.Color.blue()) -> discord.Embed:
-    """Create a standard embed."""
+def create_embed(
+    title: str, 
+    description: str = None, 
+    color: discord.Color = discord.Color.blue(),
+    **kwargs
+) -> discord.Embed:
+    """Create a standard embed with additional options."""
     embed = discord.Embed(title=title, description=description, color=color)
+    
+    # Add optional fields
+    if 'author' in kwargs:
+        embed.set_author(**kwargs['author'])
+    if 'footer' in kwargs:
+        embed.set_footer(**kwargs['footer'])
+    if 'thumbnail' in kwargs:
+        embed.set_thumbnail(url=kwargs['thumbnail'])
+    if 'image' in kwargs:
+        embed.set_image(url=kwargs['image'])
+    
     return embed
 
-async def safe_api_request(url: str, params: dict = None) -> Optional[dict]:
-    """Make a safe API request with error handling."""
+async def safe_api_request(url: str, params: dict = None, headers: dict = None) -> Optional[dict]:
+    """Make a safe API request with comprehensive error handling."""
     try:
-        session = await get_http_session()
-        async with session.get(url, params=params) as response:
+        session = await bot_state.get_http_session()
+        request_headers = headers or {}
+        
+        async with session.get(url, params=params, headers=request_headers) as response:
             if response.status == 200:
-                return await response.json()
+                data = await response.json()
+                logger.debug(f"API request successful: {url}")
+                return data
+            elif response.status == 429:
+                logger.warning(f"Rate limited on API request: {url}")
+                return None
             else:
                 logger.error(f"API request failed: {url} returned {response.status}")
                 return None
@@ -134,146 +265,328 @@ async def safe_api_request(url: str, params: dict = None) -> Optional[dict]:
     except Exception as e:
         logger.error(f"API request error for {url}: {e}")
         return None
-    
-async def search_ytdlp_async(query, ydl_opts):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: _extract(query, ydl_opts))
 
-def _extract(query, ydl_opts):
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(query, download=False)
+def format_duration(seconds: int) -> str:
+    """Format duration in human-readable format."""
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        return f"{seconds//60}m {seconds%60}s"
+    else:
+        return f"{seconds//3600}h {(seconds%3600)//60}m {seconds%60}s"
 
-# ========== Trivia Classes ==========
+# ========== Rate Limiting Decorator ==========
+def rate_limit(func):
+    """Decorator to add rate limiting to commands."""
+    async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+        if bot_state.is_rate_limited(interaction.user.id):
+            embed = create_embed(
+                "Rate Limited",
+                "You're making requests too quickly. Please wait a moment.",
+                discord.Color.red()
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        return await func(interaction, *args, **kwargs)
+    return wrapper
+
+# ========== Enhanced Music System ==========
+if YT_DLP_AVAILABLE:
+    class MusicSource(discord.PCMVolumeTransformer):
+        def __init__(self, source, *, data, volume=0.5):
+            super().__init__(source, volume)
+            self.data = data
+            self.title = data.get('title')
+            self.url = data.get('url')
+            self.duration = data.get('duration')
+            self.uploader = data.get('uploader')
+
+        @classmethod
+        async def from_url(cls, url, *, loop=None, stream=False):
+            loop = loop or asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+
+            if 'entries' in data:
+                data = data['entries'][0]
+
+            filename = data['url'] if stream else ytdl.prepare_filename(data)
+            return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+
+    # YouTube-DL configuration
+    ytdl_format_options = {
+        'format': 'bestaudio/best',
+        'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+        'restrictfilenames': True,
+        'noplaylist': True,
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
+        'logtostderr': False,
+        'quiet': True,
+        'no_warnings': True,
+        'default_search': 'auto',
+        'source_address': '0.0.0.0'
+    }
+
+    ffmpeg_options = {
+        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+        'options': '-vn'
+    }
+
+    ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+
+# ========== Enhanced Trivia System ==========
 class TriviaView(View):
-    def __init__(self, user_id: int, options: List[str], correct: str, category: str, difficulty: str):
+    """Enhanced trivia view with better UX."""
+    
+    def __init__(self, user_id: int, question_data: dict):
         super().__init__(timeout=Config.TRIVIA_TIMEOUT)
         self.user_id = user_id
-        self.correct = correct
-        self.options = options
+        self.question_data = question_data
+        self.correct = html.unescape(question_data['correct_answer'])
+        self.incorrect = [html.unescape(a) for a in question_data['incorrect_answers']]
+        self.options = self.incorrect + [self.correct]
+        random.shuffle(self.options)
         self.message = None
-        self.category = category
-        self.difficulty = difficulty
+        self.answered = False
         
-        for idx, text in enumerate(options, start=1):
-            btn = Button(label=str(idx), style=discord.ButtonStyle.primary, custom_id=str(idx))
-            btn.callback = self.create_callback(idx, text)
+        # Create buttons
+        for idx, option in enumerate(self.options, 1):
+            btn = Button(
+                label=str(idx), 
+                style=discord.ButtonStyle.primary, 
+                custom_id=f"option_{idx}",
+                emoji="🔢"
+            )
+            btn.callback = self.create_callback(idx, option)
             self.add_item(btn)
     
     def create_callback(self, idx: int, option: str):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.user_id:
                 return await interaction.response.send_message(
-                    "This isn't your question! Start your own trivia with /trivia", 
+                    "This isn't your trivia question! Use `/trivia` to start your own.", 
                     ephemeral=True
                 )
-
-            self.disable_all_buttons(idx)
-            await interaction.message.edit(view=self)
-
-            is_correct = option == self.correct
-            await self.send_result(interaction, is_correct, option)
-            self.stop()
+            
+            if self.answered:
+                return await interaction.response.send_message(
+                    "This question has already been answered!", 
+                    ephemeral=True
+                )
+            
+            self.answered = True
+            await self.process_answer(interaction, idx, option)
+        
         return callback
     
-    def disable_all_buttons(self, selected_idx: int):
-        """Disable all buttons and color them appropriately."""
+    async def process_answer(self, interaction: discord.Interaction, idx: int, selected_option: str):
+        """Process the user's answer."""
+        is_correct = selected_option == self.correct
+        
+        # Update button styles
         for child in self.children:
             child.disabled = True
-            if self.options[int(child.custom_id)-1] == self.correct:
+            option_idx = int(child.custom_id.split('_')[1])
+            option_text = self.options[option_idx - 1]
+            
+            if option_text == self.correct:
                 child.style = discord.ButtonStyle.success
-            elif child.custom_id == str(selected_idx):
-                child.style = discord.ButtonStyle.danger
+                child.emoji = "✅"
+            elif option_idx == idx:
+                child.style = discord.ButtonStyle.danger if not is_correct else discord.ButtonStyle.success
+                child.emoji = "❌" if not is_correct else "✅"
+            else:
+                child.style = discord.ButtonStyle.secondary
+        
+        await interaction.response.edit_message(view=self)
+        
+        # Send result
+        await self.send_result(interaction, is_correct, selected_option)
+        self.stop()
     
     async def send_result(self, interaction: discord.Interaction, is_correct: bool, selected_option: str):
-        """Send the trivia result."""
-        title = "🎉 Correct!" if is_correct else "❌ Incorrect"
-        desc = (
-            f"Well done, {interaction.user.mention}!"
-            if is_correct else
-            f"{interaction.user.mention} answered **{selected_option}**, but the correct answer was **{self.correct}**."
-        )
-        color = discord.Color.green() if is_correct else discord.Color.red()
-        embed = create_embed(title, desc, color)
-        embed.add_field(name="Difficulty", value=self.difficulty.capitalize(), inline=True)
-        embed.add_field(name="Category", value=self.category, inline=True)
+        """Send detailed trivia result."""
+        if is_correct:
+            title = "🎉 Correct!"
+            desc = f"Well done, {interaction.user.mention}!"
+            color = discord.Color.green()
+        else:
+            title = "❌ Incorrect"
+            desc = f"{interaction.user.mention}, the correct answer was **{self.correct}**"
+            color = discord.Color.red()
         
-        await interaction.response.send_message(embed=embed)
+        embed = create_embed(title, desc, color)
+        
+        # Add question details
+        embed.add_field(
+            name="Question", 
+            value=html.unescape(self.question_data['question']), 
+            inline=False
+        )
+        embed.add_field(
+            name="Category", 
+            value=self.question_data['category'], 
+            inline=True
+        )
+        embed.add_field(
+            name="Difficulty", 
+            value=self.question_data['difficulty'].capitalize(), 
+            inline=True
+        )
+        
+        if not is_correct:
+            embed.add_field(
+                name="Your Answer", 
+                value=selected_option, 
+                inline=True
+            )
+        
+        embed.set_footer(text="Use /trivia to play again!")
+        
+        await interaction.followup.send(embed=embed)
 
     async def on_timeout(self) -> None:
-        if self.message is None:
+        """Handle timeout."""
+        if self.message is None or self.answered:
             return
         
+        self.answered = True
+        
+        # Update buttons to show correct answer
         for child in self.children:
             child.disabled = True
-            if self.options[int(child.custom_id)-1] == self.correct:
+            option_idx = int(child.custom_id.split('_')[1])
+            option_text = self.options[option_idx - 1]
+            
+            if option_text == self.correct:
                 child.style = discord.ButtonStyle.success
+                child.emoji = "✅"
+            else:
+                child.style = discord.ButtonStyle.secondary
         
-        embed = self.message.embeds[0]
-        embed.title = "⏰ Trivia Expired"
-        embed.color = discord.Color.dark_gray()
-        
+        # Update embed
         try:
+            embed = self.message.embeds[0]
+            embed.title = "⏰ Time's Up!"
+            embed.color = discord.Color.dark_gray()
+            embed.set_footer(text="You ran out of time! Use /trivia to try again.")
+            
             await self.message.edit(embed=embed, view=self)
-            await self.message.reply(f"Time's up! The correct answer was **{self.correct}**.")
+            await self.message.reply(f"⏰ Time's up! The correct answer was **{self.correct}**")
         except Exception as e:
             logger.error(f"Error updating expired trivia: {e}")
 
 class TriviaSetupView(View):
+    """Enhanced trivia setup with better organization."""
+    
     def __init__(self, interaction: discord.Interaction, categories: List[Dict[str, Any]]):
         super().__init__(timeout=Config.SETUP_TIMEOUT)
         self.interaction = interaction
-        self.category = "0"
+        self.category = "0"  # Any category
         self.difficulty = "any"
-
-        # Category select
-        category_options = [discord.SelectOption(label="Random", description="Any category", value="0")]
-        for category in categories[:24]:  # Discord limit
-            category_options.append(discord.SelectOption(label=category["name"], value=str(category["id"])))
+        self.categories = categories
         
-        category_select = Select(placeholder="Select a category...", options=category_options)
+        self.setup_components()
+    
+    def setup_components(self):
+        """Setup all UI components."""
+        # Category select
+        category_options = [discord.SelectOption(
+            label="Any Category", 
+            description="Random category", 
+            value="0",
+            emoji="🎲"
+        )]
+        
+        for category in self.categories[:23]:  # Discord limit is 25, we have 2 already
+            category_options.append(discord.SelectOption(
+                label=category["name"][:100],  # Discord limit
+                value=str(category["id"])
+            ))
+        
+        category_select = Select(
+            placeholder="🎯 Choose a category...", 
+            options=category_options,
+            custom_id="category_select"
+        )
         category_select.callback = self.category_callback
         self.add_item(category_select)
-
+        
         # Difficulty select
         difficulty_options = [
-            discord.SelectOption(label="Random", value="any"),
-            discord.SelectOption(label="Easy", value="easy"),
-            discord.SelectOption(label="Medium", value="medium"),
-            discord.SelectOption(label="Hard", value="hard")
+            discord.SelectOption(label="Any Difficulty", value="any", emoji="🎲"),
+            discord.SelectOption(label="Easy", value="easy", emoji="🟢"),
+            discord.SelectOption(label="Medium", value="medium", emoji="🟡"),
+            discord.SelectOption(label="Hard", value="hard", emoji="🔴")
         ]
-        difficulty_select = Select(placeholder="Select difficulty...", options=difficulty_options)
+        
+        difficulty_select = Select(
+            placeholder="⚡ Choose difficulty...", 
+            options=difficulty_options,
+            custom_id="difficulty_select"
+        )
         difficulty_select.callback = self.difficulty_callback
         self.add_item(difficulty_select)
-
-        start_button = Button(label="Start Trivia", style=discord.ButtonStyle.success)
+        
+        # Start button
+        start_button = Button(
+            label="Start Trivia!", 
+            style=discord.ButtonStyle.success, 
+            emoji="🚀",
+            custom_id="start_trivia"
+        )
         start_button.callback = self.start_callback
         self.add_item(start_button)
     
     async def category_callback(self, interaction: discord.Interaction) -> None:
         self.category = interaction.data['values'][0]
-        await interaction.response.defer()
-
+        selected_name = next(
+            (cat["name"] for cat in self.categories if str(cat["id"]) == self.category), 
+            "Any Category"
+        )
+        await interaction.response.send_message(
+            f"📂 Selected category: **{selected_name}**", 
+            ephemeral=True
+        )
+    
     async def difficulty_callback(self, interaction: discord.Interaction) -> None:
         self.difficulty = interaction.data['values'][0]
-        await interaction.response.defer()
-
+        difficulty_display = self.difficulty.capitalize() if self.difficulty != "any" else "Any Difficulty"
+        await interaction.response.send_message(
+            f"⚡ Selected difficulty: **{difficulty_display}**", 
+            ephemeral=True
+        )
+    
     async def start_callback(self, interaction: discord.Interaction) -> None:
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(view=self)
+        
+        embed = create_embed(
+            "🔄 Loading Trivia...", 
+            "Fetching your question...", 
+            discord.Color.yellow()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+        
         await fetch_and_display_trivia(interaction, self.category, self.difficulty)
-
+    
     async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
+        
         try:
-            await self.interaction.edit_original_response(view=self)
+            embed = create_embed(
+                "⏰ Setup Expired", 
+                "The trivia setup timed out. Use `/trivia` to try again.", 
+                discord.Color.dark_gray()
+            )
+            await self.interaction.edit_original_response(embed=embed, view=self)
         except Exception as e:
             logger.warning(f"Could not update expired setup view: {e}")
 
-# ========== Trivia Functions ==========
+# ========== Enhanced Trivia Functions ==========
 async def fetch_categories() -> List[Dict[str, Any]]:
-    """Fetch trivia categories from API with fallback."""
+    """Fetch trivia categories with better error handling."""
     data = await safe_api_request(Config.TRIVIA_CATEGORIES_API)
     
     if data and "trivia_categories" in data:
@@ -281,245 +594,630 @@ async def fetch_categories() -> List[Dict[str, Any]]:
         logger.info(f"Fetched {len(categories)} trivia categories")
         return categories
     
-    # Fallback categories
-    logger.warning("Failed to fetch categories, using fallback")
+    # Comprehensive fallback categories
+    logger.warning("Failed to fetch categories, using comprehensive fallback")
     return [
-        {"id": 9,  "name": "General Knowledge"},
+        {"id": 9, "name": "General Knowledge"},
+        {"id": 10, "name": "Entertainment: Books"},
+        {"id": 11, "name": "Entertainment: Film"},
+        {"id": 12, "name": "Entertainment: Music"},
+        {"id": 17, "name": "Science & Nature"},
+        {"id": 18, "name": "Science: Computers"},
+        {"id": 19, "name": "Science: Mathematics"},
         {"id": 21, "name": "Sports"},
         {"id": 22, "name": "Geography"},
-        {"id": 23, "name": "History"}
+        {"id": 23, "name": "History"},
+        {"id": 27, "name": "Animals"}
     ]
 
-async def fetch_and_display_trivia(interaction: discord.Interaction, category_id: str = "0", difficulty: str = "any") -> None:
-    """Fetch and display a trivia question."""
-    url = Config.TRIVIA_API
+async def fetch_and_display_trivia(
+    interaction: discord.Interaction, 
+    category_id: str = "0", 
+    difficulty: str = "any"
+) -> None:
+    """Fetch and display trivia with enhanced presentation."""
     params = {}
-    
     if category_id != "0":
         params["category"] = category_id
     if difficulty != "any":
         params["difficulty"] = difficulty
-
-    data = await safe_api_request(url, params)
+    
+    data = await safe_api_request(Config.TRIVIA_API, params)
     
     if not data or data.get("response_code") != 0 or not data.get("results"):
-        return await interaction.followup.send("No trivia found. Try different settings.")
-
-    result = data["results"][0]
-    question = html.unescape(result["question"])
-    correct = html.unescape(result["correct_answer"])
-    incorrect = [html.unescape(a) for a in result["incorrect_answers"]]
-    category = result["category"]
-    difficulty_level = result["difficulty"]
+        embed = create_embed(
+            "😅 No Questions Found",
+            "Couldn't find a trivia question with those settings. Try different options!",
+            discord.Color.orange()
+        )
+        return await interaction.edit_original_response(embed=embed, view=None)
     
-    options = incorrect + [correct]
-    random.shuffle(options)
-
-    view = TriviaView(interaction.user.id, options, correct, category, difficulty_level)
+    question_data = data["results"][0]
+    view = TriviaView(interaction.user.id, question_data)
+    
+    # Create enhanced embed
+    question_text = html.unescape(question_data["question"])
+    category = question_data["category"]
+    difficulty_level = question_data["difficulty"]
+    
+    # Difficulty emoji mapping
+    difficulty_emojis = {"easy": "🟢", "medium": "🟡", "hard": "🔴"}
+    difficulty_emoji = difficulty_emojis.get(difficulty_level, "⚪")
     
     embed = create_embed(
-        f"Trivia Time! ({difficulty_level.capitalize()})",
-        question,
+        f"🧠 Trivia Question",
+        f"**{question_text}**",
         discord.Color.blurple()
     )
-    embed.set_author(name=category)
-    embed.set_footer(text=f"Requested by {interaction.user.display_name}")
-
-    for idx, option in enumerate(options, 1):
-        embed.add_field(name=f"{idx}.", value=option, inline=False)
-
-    msg = await interaction.followup.send(embed=embed, view=view)
-    view.message = msg
     
-    logger.info(f"Trivia question sent to user {interaction.user}")
-
-# ========== Basic Bot Commands ==========
-@bot.tree.command(name="play", description="Play a song or add it to the queue.")
-@app_commands.describe(song_query="search query")
-async def play(interaction: discord.Interaction, song_query: str):
-    await interaction.response.defer()
-
-    voice_channel = interaction.user.voice.channel
-
-    if voice_channel is None:
-        await interaction.followup.send("You need to be in a voice channel to play music!")
-        return
+    embed.add_field(
+        name="📂 Category", 
+        value=category, 
+        inline=True
+    )
+    embed.add_field(
+        name=f"{difficulty_emoji} Difficulty", 
+        value=difficulty_level.capitalize(), 
+        inline=True
+    )
+    embed.add_field(
+        name="⏱️ Time Limit", 
+        value=f"{Config.TRIVIA_TIMEOUT} seconds", 
+        inline=True
+    )
     
-    voice_client = interaction.guild.voice_client
-
-    if voice_client is None:
-        voice_client = await voice_channel.connect()
-    elif voice_channel != voice_client.channel:
-        await voice_client.move_to(voice_channel)
-
-    ydl_options = {
-        "format": "bestaudio[abr<=96]/bestaudio",
-        "noplaylist": True,
-        "youtube_include_dash_manifest": False,
-        "youtube_include_hls_manifest": False,
-    }
-
-    query = "ytsearch: " + song_query
-    results = await search_ytdlp_async(query, ydl_options)
-    tracks = results.get("entries", [])
-
-    if tracks is None:
-        await interaction.followup.send("No results found.")
-        return
-
-    first_track = tracks[0]
-    audio_url = first_track("url")
-    title = first_track.get("title", "Untitled")
-
-    ffmpeg_options = {
-        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        "options": "-vn -c:a libopus -b:a 96k",
-    }
-
-    source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="bin\\ffmpeg.exe")
-
-    voice_client.play(source)
-
-@bot.tree.command(name="fact", description="Get a random fact.")
-async def fact_slash(interaction: discord.Interaction) -> None:
-    try:
-        fact = randfacts.get_fact()
-        await interaction.response.send_message(f"Did you know? {fact}")
-        logger.info(f"Fact command used by {interaction.user}")
-    except Exception as e:
-        logger.error(f"Error getting fact: {e}")
-        await interaction.response.send_message("Sorry, couldn't fetch a fact right now!")
-
-@bot.tree.command(name="ping", description="Check the bot's latency.")
-async def ping_slash(interaction: discord.Interaction) -> None:
-    latency = round(bot.latency * 1000)
-    await interaction.response.send_message(f"Pong! Latency: {latency}ms")
-
-@bot.tree.command(name="number", description="Generate a random number between two values.")
-async def number_slash(interaction: discord.Interaction, min_num: int, max_num: int) -> None:
-    if min_num > max_num:
-        return await interaction.response.send_message(
-            "Invalid range! First number must be ≤ second.", ephemeral=True
+    # Add options
+    for idx, option in enumerate(view.options, 1):
+        embed.add_field(
+            name=f"{idx}️⃣ Option {idx}", 
+            value=option, 
+            inline=False
         )
     
+    embed.set_footer(
+        text=f"Requested by {interaction.user.display_name} • Select an option below!",
+        icon_url=interaction.user.display_avatar.url
+    )
+    
+    msg = await interaction.edit_original_response(embed=embed, view=view)
+    view.message = msg
+    
+    logger.info(f"Trivia question displayed to {interaction.user} (Category: {category}, Difficulty: {difficulty_level})")
+
+# ========== Enhanced Bot Commands ==========
+@bot.tree.command(name="help", description="Show all available commands and their usage.")
+async def help_command(interaction: discord.Interaction):
+    """Enhanced help command with categorized information."""
+    embed = create_embed(
+        "🤖 Bot Commands", 
+        "Here are all the available commands:", 
+        discord.Color.blue()
+    )
+    
+    # Fun Commands
+    embed.add_field(
+        name="🎲 Fun Commands",
+        value="`/trivia` - Play trivia questions\n"
+              "`/fact` - Get a random fact\n"
+              "`/coin` - Flip a coin\n"
+              "`/number <min> <max>` - Random number",
+        inline=False
+    )
+    
+    # Utility Commands
+    embed.add_field(
+        name="🔧 Utility Commands",
+        value="`/weather <city>` - Get weather info\n"
+              "`/ping` - Check bot latency\n"
+              "`/help` - Show this message",
+        inline=False
+    )
+    
+    # Music Commands (if available)
+    if YT_DLP_AVAILABLE:
+        embed.add_field(
+            name="🎵 Music Commands",
+            value="`/play <song>` - Play music\n"
+                  "`/stop` - Stop music\n"
+                  "`/leave` - Leave voice channel",
+            inline=False
+        )
+    
+    embed.set_footer(text="Use slash commands (/) to interact with the bot!")
+    embed.set_thumbnail(url=bot.user.display_avatar.url)
+    
+    await interaction.response.send_message(embed=embed)
+
+# Music commands (only if yt-dlp is available)
+if YT_DLP_AVAILABLE:
+    @bot.tree.command(name="play", description="Play a song or add it to the queue.")
+    @app_commands.describe(query="Song name or YouTube URL")
+    @rate_limit
+    async def play_command(interaction: discord.Interaction, query: str):
+        """Enhanced play command with better error handling."""
+        if len(query) > Config.MAX_SONG_QUERY_LENGTH:
+            return await interaction.response.send_message(
+                "❌ Song query too long! Please use a shorter search term.", 
+                ephemeral=True
+            )
+        
+        if not interaction.user.voice:
+            return await interaction.response.send_message(
+                "❌ You need to be in a voice channel to play music!", 
+                ephemeral=True
+            )
+        
+        await interaction.response.defer()
+        
+        try:
+            voice_channel = interaction.user.voice.channel
+            voice_client = interaction.guild.voice_client
+            
+            if voice_client is None:
+                voice_client = await voice_channel.connect()
+                logger.info(f"Connected to voice channel: {voice_channel.name}")
+            elif voice_channel != voice_client.channel:
+                await voice_client.move_to(voice_channel)
+                logger.info(f"Moved to voice channel: {voice_channel.name}")
+            
+            # Search for the song
+            embed = create_embed("🔍 Searching...", f"Looking for: **{query}**", discord.Color.yellow())
+            await interaction.edit_original_response(embed=embed)
+            
+            source = await MusicSource.from_url(query, loop=bot.loop, stream=True)
+            
+            if voice_client.is_playing():
+                # Add to queue (basic implementation)
+                guild_id = interaction.guild.id
+                if guild_id not in bot_state.music_queues:
+                    bot_state.music_queues[guild_id] = []
+                bot_state.music_queues[guild_id].append((source, interaction.user))
+                
+                embed = create_embed(
+                    "📝 Added to Queue",
+                    f"**{source.title}** has been added to the queue.",
+                    discord.Color.green()
+                )
+            else:
+                voice_client.play(source)
+                embed = create_embed(
+                    "🎵 Now Playing",
+                    f"**{source.title}**",
+                    discord.Color.green()
+                )
+                
+                if source.duration:
+                    embed.add_field(
+                        name="Duration", 
+                        value=format_duration(source.duration), 
+                        inline=True
+                    )
+                if source.uploader:
+                    embed.add_field(
+                        name="Uploader", 
+                        value=source.uploader, 
+                        inline=True
+                    )
+            
+            embed.set_footer(
+                text=f"Requested by {interaction.user.display_name}",
+                icon_url=interaction.user.display_avatar.url
+            )
+            
+            await interaction.edit_original_response(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in play command: {e}")
+            embed = create_embed(
+                "❌ Playback Error",
+                "Sorry, I couldn't play that song. Please try a different search term.",
+                discord.Color.red()
+            )
+            await interaction.edit_original_response(embed=embed)
+    
+    @bot.tree.command(name="stop", description="Stop the current song and clear the queue.")
+    async def stop_command(interaction: discord.Interaction):
+        """Stop music and clear queue."""
+        voice_client = interaction.guild.voice_client
+        
+        if not voice_client:
+            return await interaction.response.send_message(
+                "❌ I'm not connected to a voice channel!", 
+                ephemeral=True
+            )
+        
+        if voice_client.is_playing():
+            voice_client.stop()
+        
+        # Clear queue
+        guild_id = interaction.guild.id
+        if guild_id in bot_state.music_queues:
+            bot_state.music_queues[guild_id].clear()
+        
+        embed = create_embed(
+            "⏹️ Music Stopped",
+            "Playback stopped and queue cleared.",
+            discord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed)
+    
+    @bot.tree.command(name="leave", description="Leave the voice channel.")
+    async def leave_command(interaction: discord.Interaction):
+        """Leave voice channel."""
+        voice_client = interaction.guild.voice_client
+        
+        if not voice_client:
+            return await interaction.response.send_message(
+                "❌ I'm not in a voice channel!", 
+                ephemeral=True
+            )
+        
+        channel_name = voice_client.channel.name
+        await voice_client.disconnect()
+        
+        # Clear queue
+        guild_id = interaction.guild.id
+        if guild_id in bot_state.music_queues:
+            bot_state.music_queues[guild_id].clear()
+        
+        embed = create_embed(
+            "👋 Left Voice Channel",
+            f"Disconnected from **{channel_name}**",
+            discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="fact", description="Get a random interesting fact.")
+@rate_limit
+async def fact_command(interaction: discord.Interaction):
+    """Enhanced fact command with better presentation."""
+    await interaction.response.defer()
+    
+    try:
+        fact = randfacts.get_fact()
+        
+        embed = create_embed(
+            "🧠 Random Fact",
+            fact,
+            discord.Color.green()
+        )
+        embed.set_footer(
+            text=f"Fact requested by {interaction.user.display_name}",
+            icon_url=interaction.user.display_avatar.url
+        )
+        
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Fact command used by {interaction.user}")
+        
+    except Exception as e:
+        logger.error(f"Error getting fact: {e}")
+        embed = create_embed(
+            "❌ Error",
+            "Sorry, couldn't fetch a fact right now! Please try again later.",
+            discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="ping", description="Check the bot's latency and status.")
+async def ping_command(interaction: discord.Interaction):
+    """Enhanced ping command with detailed information."""
+    start_time = datetime.datetime.utcnow()
+    
+    embed = create_embed(
+        "🏓 Pong!",
+        "Checking connection...",
+        discord.Color.yellow()
+    )
+    await interaction.response.send_message(embed=embed)
+    
+    # Calculate response time
+    end_time = datetime.datetime.utcnow()
+    response_time = (end_time - start_time).total_seconds() * 1000
+    
+    # Update embed with detailed info
+    ws_latency = round(bot.latency * 1000)
+    
+    embed = create_embed(
+        "🏓 Pong!",
+        "Connection status and latency information:",
+        discord.Color.green()
+    )
+    embed.add_field(name="WebSocket Latency", value=f"{ws_latency}ms", inline=True)
+    embed.add_field(name="Response Time", value=f"{response_time:.1f}ms", inline=True)
+    embed.add_field(name="Status", value="✅ Online", inline=True)
+    
+    uptime = datetime.datetime.utcnow() - bot_state.start_time
+    embed.add_field(
+        name="Uptime", 
+        value=format_duration(int(uptime.total_seconds())), 
+        inline=True
+    )
+    embed.add_field(name="Guilds", value=str(len(bot.guilds)), inline=True)
+    embed.add_field(name="Users", value=str(len(bot.users)), inline=True)
+    
+    await interaction.edit_original_response(embed=embed)
+
+@bot.tree.command(name="number", description="Generate a random number between two values.")
+@app_commands.describe(min_num="Minimum number", max_num="Maximum number")
+async def number_command(interaction: discord.Interaction, min_num: int, max_num: int):
+    """Enhanced random number generator with validation."""
+    if min_num > max_num:
+        embed = create_embed(
+            "❌ Invalid Range",
+            f"The minimum number ({min_num}) must be less than or equal to the maximum number ({max_num}).",
+            discord.Color.red()
+        )
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    if max_num - min_num > 1000000:
+        embed = create_embed(
+            "❌ Range Too Large",
+            "The range is too large. Please use a smaller range (max 1,000,000).",
+            discord.Color.red()
+        )
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
     result = random.randint(min_num, max_num)
-    await interaction.response.send_message(f"Here is your number: {result}")
+    
+    embed = create_embed(
+        "🎲 Random Number",
+        f"Your random number between **{min_num}** and **{max_num}** is:",
+        discord.Color.blue()
+    )
+    embed.add_field(name="Result", value=f"**{result}**", inline=False)
+    embed.set_footer(
+        text=f"Generated for {interaction.user.display_name}",
+        icon_url=interaction.user.display_avatar.url
+    )
+    
+    await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="coin", description="Flip a coin.")
-async def coin_slash(interaction: discord.Interaction) -> None:
+@bot.tree.command(name="coin", description="Flip a coin and get heads or tails.")
+async def coin_command(interaction: discord.Interaction):
+    """Enhanced coin flip with animation effect."""
+    embed = create_embed(
+        "🪙 Flipping Coin...",
+        "The coin is spinning through the air...",
+        discord.Color.yellow()
+    )
+    await interaction.response.send_message(embed=embed)
+    
+    # Add a small delay for effect
+    await asyncio.sleep(1)
+    
     result = "Heads" if random.randint(0, 1) == 0 else "Tails"
-    await interaction.response.send_message(result)
+    emoji = "👑" if result == "Heads" else "🎯"
+    
+    embed = create_embed(
+        f"🪙 Coin Flip Result",
+        f"The coin landed on **{result}**! {emoji}",
+        discord.Color.green()
+    )
+    embed.set_footer(
+        text=f"Flipped by {interaction.user.display_name}",
+        icon_url=interaction.user.display_avatar.url
+    )
+    
+    await interaction.edit_original_response(embed=embed)
 
-@bot.tree.command(name="trivia", description="Answer a multiple choice trivia question.")
-async def trivia_slash(interaction: discord.Interaction) -> None:
+@bot.tree.command(name="trivia", description="Play an interactive trivia game with multiple categories and difficulties.")
+@rate_limit
+async def trivia_command(interaction: discord.Interaction):
+    """Enhanced trivia command with better setup."""
     await interaction.response.defer()
     
     try:
         categories = await fetch_categories()
         view = TriviaSetupView(interaction, categories)
+        
         embed = create_embed(
-            "Trivia Setup",
-            "Choose a category and difficulty for your trivia question!",
+            "🧠 Trivia Setup",
+            "Welcome to Trivia! Configure your question below:",
             discord.Color.blue()
         )
+        embed.add_field(
+            name="📂 Categories Available", 
+            value=f"{len(categories)} categories", 
+            inline=True
+        )
+        embed.add_field(
+            name="⚡ Difficulties", 
+            value="Easy, Medium, Hard", 
+            inline=True
+        )
+        embed.add_field(
+            name="⏱️ Time Limit", 
+            value=f"{Config.TRIVIA_TIMEOUT} seconds", 
+            inline=True
+        )
+        embed.set_footer(
+            text="Select your preferences and click 'Start Trivia!' to begin",
+            icon_url=interaction.user.display_avatar.url
+        )
+        
         await interaction.followup.send(embed=embed, view=view)
-        logger.info(f"Trivia setup shown to {interaction.user}")
+        logger.info(f"Trivia setup presented to {interaction.user}")
+        
     except Exception as e:
         logger.error(f"Error in trivia setup: {e}")
-        await interaction.followup.send("Sorry, couldn't start trivia right now!")
+        embed = create_embed(
+            "❌ Setup Error",
+            "Sorry, couldn't start trivia right now! Please try again later.",
+            discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="weather", description="Look up the weather of your desired city.")
-async def weather_slash(interaction: discord.Interaction, city: str) -> None:
+@bot.tree.command(name="weather", description="Get detailed weather information for any city.")
+@app_commands.describe(city="Name of the city to get weather for")
+@rate_limit
+async def weather_command(interaction: discord.Interaction, city: str):
+    """Enhanced weather command with comprehensive information."""
     # Input validation
-    if not city or len(city.strip()) < Config.MIN_CITY_NAME_LENGTH:
-        return await interaction.response.send_message("Please provide a city name!", ephemeral=True)
+    city = city.strip()
+    if not city or len(city) < Config.MIN_CITY_NAME_LENGTH:
+        embed = create_embed(
+            "❌ Invalid Input",
+            "Please provide a valid city name!",
+            discord.Color.red()
+        )
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
     
     if len(city) > Config.MAX_CITY_NAME_LENGTH:
-        return await interaction.response.send_message("City name too long! Please use a shorter name.", ephemeral=True)
+        embed = create_embed(
+            "❌ City Name Too Long",
+            f"City name must be less than {Config.MAX_CITY_NAME_LENGTH} characters!",
+            discord.Color.red()
+        )
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    city = city.strip()
     await interaction.response.defer()
     
     try:
+        # Show loading message
+        embed = create_embed(
+            "🔍 Fetching Weather...",
+            f"Getting weather data for **{city}**...",
+            discord.Color.yellow()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
         async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
             weather = await client.get(city)
+            embed = await create_weather_embed(weather, interaction.user)
+            await interaction.edit_original_response(embed=embed)
             
-            embed = await create_weather_embed(weather)
-            await interaction.followup.send(embed=embed)
-            logger.info(f"Weather data sent for {city} to user {interaction.user}")
-
+        logger.info(f"Weather data provided for {city} to user {interaction.user}")
+        
     except RequestError as e:
-        logger.error(f"Weather lookup error (status {e.status}): {str(e)}")
-        await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Server returned status code: {e.status}")
+        logger.error(f"Weather API error (status {e.status}): {str(e)}")
+        embed = create_embed(
+            "🌐 API Error",
+            f"Weather service returned an error for '{city}'. Please check the city name and try again.",
+            discord.Color.red()
+        )
+        embed.add_field(name="Error Code", value=str(e.status), inline=True)
+        await interaction.edit_original_response(embed=embed)
+        
     except Error as e:
         logger.error(f"Weather lookup error: {str(e)}")
-        await interaction.followup.send(f"Error getting weather for '{city}': {str(e)}")
+        embed = create_embed(
+            "❌ Weather Error",
+            f"Couldn't get weather data for '{city}'. Please try a different city name.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
     except Exception as e:
-        logger.error(f"Unexpected error in weather command: {str(e)}")
-        await interaction.followup.send(f"Couldn't fetch weather for '{city}'. Please try a valid city name.")
+        logger.error(f"Unexpected weather error: {str(e)}")
+        embed = create_embed(
+            "💥 Unexpected Error",
+            "Something went wrong while fetching weather data. Please try again later.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
 
-async def create_weather_embed(weather) -> discord.Embed:
-    """Create weather embed with all information."""
+async def create_weather_embed(weather, user: discord.User) -> discord.Embed:
+    """Create an enhanced weather embed with comprehensive information."""
+    # Get weather emoji and create title
     weather_emoji = getattr(weather.kind, 'emoji', '🌤️')
+    date_str = weather.datetime.strftime('%A, %B %d, %Y')
     
-    title = f"{weather_emoji} Weather in {weather.location} - {weather.datetime.strftime('%A, %B %d')}"
-    description = f"**{weather.description}**, {weather.temperature}°F"
+    title = f"{weather_emoji} Weather in {weather.location}"
+    description = f"**{weather.description}** • **{weather.temperature}°F**\n{date_str}"
     
-    embed = create_embed(title, description)
+    # Choose color based on temperature
+    temp = weather.temperature
+    if temp >= 80:
+        color = discord.Color.red()
+    elif temp >= 60:
+        color = discord.Color.orange()
+    elif temp >= 40:
+        color = discord.Color.blue()
+    else:
+        color = discord.Color.dark_blue()
     
+    embed = create_embed(title, description, color)
+    
+    # Location details
     if weather.region and weather.country:
-        embed.add_field(name="Location", value=f"{weather.region}, {weather.country}", inline=False)
+        embed.add_field(
+            name="📍 Location", 
+            value=f"{weather.region}, {weather.country}", 
+            inline=False
+        )
     
-    # Basic weather info
-    embed.add_field(name="Feels Like", value=f"{weather.feels_like}°F", inline=True)
-    embed.add_field(name="Humidity", value=f"{weather.humidity}%", inline=True)
+    # Temperature information
+    embed.add_field(name="🌡️ Temperature", value=f"{weather.temperature}°F", inline=True)
+    embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}°F", inline=True)
+    embed.add_field(name="💧 Humidity", value=f"{weather.humidity}%", inline=True)
     
     # Wind information
     wind_info = f"{weather.wind_speed} mph"
     if weather.wind_direction:
-        wind_info += f" {str(weather.wind_direction)}"
+        direction_str = str(weather.wind_direction)
         if hasattr(weather.wind_direction, "emoji"):
-            wind_info += f" {weather.wind_direction.emoji}"
-    embed.add_field(name="Wind", value=wind_info, inline=True)
+            direction_str += f" {weather.wind_direction.emoji}"
+        wind_info += f" {direction_str}"
+    embed.add_field(name="💨 Wind", value=wind_info, inline=True)
     
     # Additional weather data
-    embed.add_field(name="Precipitation", value=f"{weather.precipitation} in", inline=True)
-    embed.add_field(name="Pressure", value=f"{weather.pressure} in", inline=True)
-    embed.add_field(name="Visibility", value=f"{weather.visibility} mi", inline=True)
+    embed.add_field(name="🌧️ Precipitation", value=f"{weather.precipitation} in", inline=True)
+    embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} inHg", inline=True)
+    
+    if weather.visibility:
+        embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} miles", inline=True)
     
     if weather.ultraviolet:
         uv_text = str(weather.ultraviolet)
         if hasattr(weather.ultraviolet, "index"):
-            uv_text = f"{uv_text} ({weather.ultraviolet.index})"
-        embed.add_field(name="UV Index", value=uv_text, inline=True)
+            uv_index = weather.ultraviolet.index
+            uv_text = f"{uv_index}/10"
+            # Add UV warning emoji based on index
+            if uv_index >= 8:
+                uv_text += " ⚠️"
+            elif uv_index >= 6:
+                uv_text += " 🟡"
+        embed.add_field(name="☀️ UV Index", value=uv_text, inline=True)
     
     # Forecast information
     if weather.daily_forecasts:
         forecast_text = ""
-        
-        for i, day_forecast in enumerate(weather.daily_forecasts[:3]):
+        for i, day_forecast in enumerate(weather.daily_forecasts[:4]):  # Show 4 days
+            if i >= 4:  # Limit to prevent embed length issues
+                break
+                
             day_name = get_day_name(i, day_forecast)
             day_emoji = getattr(getattr(day_forecast, 'kind', None), 'emoji', '🌤️')
             
-            day_text = f"{day_emoji} **{day_name}**: "
-            
-            if hasattr(day_forecast, 'description'):
-                day_text += f"{day_forecast.description}, "
-            elif hasattr(day_forecast, 'kind'):
-                day_text += f"{day_forecast.kind}, "
-            
+            # Get temperature info
             temp_info = get_temperature_info(day_forecast)
-            day_text += temp_info
+            
+            # Get description
+            description = ""
+            if hasattr(day_forecast, 'description'):
+                description = day_forecast.description
+            elif hasattr(day_forecast, 'kind'):
+                description = str(day_forecast.kind)
+            
+            day_text = f"{day_emoji} **{day_name}**: {description}"
+            if temp_info:
+                day_text += f" • {temp_info}"
             
             forecast_text += day_text + "\n"
         
-        embed.add_field(name="Forecast", value=forecast_text, inline=False)
+        if forecast_text:
+            embed.add_field(name="📅 Forecast", value=forecast_text, inline=False)
     
-    embed.set_footer(text=f"Data provided by python_weather • {weather.datetime.strftime('%H:%M')}")
+    # Footer with timestamp and user
+    embed.set_footer(
+        text=f"Requested by {user.display_name} • {weather.datetime.strftime('%I:%M %p')}",
+        icon_url=user.display_avatar.url
+    )
+    
     return embed
 
 def get_day_name(index: int, day_forecast) -> str:
-    """Get the appropriate day name for forecast."""
+    """Get appropriate day name for forecast."""
     if index == 0:
         return "Today"
     elif index == 1:
@@ -527,89 +1225,230 @@ def get_day_name(index: int, day_forecast) -> str:
     else:
         if hasattr(day_forecast, 'date'):
             return day_forecast.date.strftime('%A')
-        else:
-            return f"Day {index + 1}"
+        return f"Day {index + 1}"
 
 def get_temperature_info(day_forecast) -> str:
     """Extract temperature information from day forecast."""
-    temp_high = getattr(day_forecast, 'highest', None) or getattr(day_forecast, 'high', None) or getattr(day_forecast, 'temperature', None)
-    temp_low = getattr(day_forecast, 'lowest', None) or getattr(day_forecast, 'low', None)
+    # Try different possible attribute names
+    temp_high = (getattr(day_forecast, 'highest', None) or 
+                getattr(day_forecast, 'high', None) or 
+                getattr(day_forecast, 'max_temperature', None) or
+                getattr(day_forecast, 'temperature', None))
+    
+    temp_low = (getattr(day_forecast, 'lowest', None) or 
+               getattr(day_forecast, 'low', None) or 
+               getattr(day_forecast, 'min_temperature', None))
     
     if temp_high is not None:
-        temp_info = f"High: {temp_high}°F"
         if temp_low is not None:
-            temp_info += f", Low: {temp_low}°F"
-        return temp_info
+            return f"H: {temp_high}°F, L: {temp_low}°F"
+        else:
+            return f"{temp_high}°F"
     
-    # Fallback: check all attributes for temperature-related data
-    attrs = vars(day_forecast)
-    temp_attrs = [f"{name}: {value}°F" for name, value in attrs.items() 
-                 if any(keyword in name.lower() for keyword in ['temp', 'high', 'low'])]
-    return ", ".join(temp_attrs) if temp_attrs else "Temperature data unavailable"
+    return "Temperature data unavailable"
 
-# ========== Bot Events ==========
+# ========== Enhanced Bot Events ==========
 @bot.event
-async def on_ready() -> None:
-    logger.info(f'{bot.user} has connected to Discord!')
+async def on_ready():
+    """Enhanced bot startup event."""
+    logger.info(f'🤖 {bot.user} has connected to Discord!')
+    logger.info(f'📊 Connected to {len(bot.guilds)} guilds with {len(bot.users)} users')
+    
+    # Initialize bot state
+    await bot_state.initialize()
+    
+    # Sync commands
     try:
         synced = await bot.tree.sync()
-        logger.info(f'Synced {len(synced)} command(s)')
+        logger.info(f'✅ Synced {len(synced)} slash command(s)')
     except Exception as e:
-        logger.error(f'Failed to sync commands: {e}')
-
-@bot.event
-async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
-    logger.error(f'Command error: {error}')
-
-@bot.event
-async def on_message(message: discord.Message) -> None:
-    """Handle message events for spell checking (if needed)."""
-    if message.author == bot.user:
-        return
+        logger.error(f'❌ Failed to sync commands: {e}')
     
-    # Process commands first
-    await bot.process_commands(message)
+    # Set bot status
+    activity = discord.Activity(
+        type=discord.ActivityType.listening, 
+        name=f"/help • {len(bot.guilds)} servers"
+    )
+    await bot.change_presence(activity=activity)
+    
+    # Start background tasks
+    if not status_update_task.is_running():
+        status_update_task.start()
 
-# ========== Cleanup and Shutdown ==========
+@bot.event
+async def on_guild_join(guild):
+    """Handle joining a new guild."""
+    logger.info(f'📥 Joined guild: {guild.name} (ID: {guild.id})')
+    
+    # Update status
+    activity = discord.Activity(
+        type=discord.ActivityType.listening, 
+        name=f"/help • {len(bot.guilds)} servers"
+    )
+    await bot.change_presence(activity=activity)
+    
+    # Try to send a welcome message
+    if guild.system_channel:
+        embed = create_embed(
+            "👋 Hello!",
+            f"Thanks for adding me to **{guild.name}**!\n\n"
+            "• Use `/help` to see all available commands\n"
+            "• Use `/trivia` to start a fun trivia game\n"
+            "• Use `/weather <city>` to get weather information\n\n"
+            "Have fun! 🎉",
+            discord.Color.green()
+        )
+        try:
+            await guild.system_channel.send(embed=embed)
+        except discord.Forbidden:
+            pass  # Can't send messages to that channel
+
+@bot.event
+async def on_guild_remove(guild):
+    """Handle leaving a guild."""
+    logger.info(f'📤 Left guild: {guild.name} (ID: {guild.id})')
+    
+    # Clean up any guild-specific data
+    if guild.id in bot_state.music_queues:
+        del bot_state.music_queues[guild.id]
+    
+    # Update status
+    activity = discord.Activity(
+        type=discord.ActivityType.listening, 
+        name=f"/help • {len(bot.guilds)} servers"
+    )
+    await bot.change_presence(activity=activity)
+
+@bot.event
+async def on_command_error(ctx, error):
+    """Enhanced error handling."""
+    logger.error(f'Command error in {ctx.command}: {error}', exc_info=error)
+
+@bot.event
+async def on_application_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Handle application command errors."""
+    logger.error(f'Slash command error: {error}', exc_info=error)
+    
+    if isinstance(error, app_commands.CommandOnCooldown):
+        embed = create_embed(
+            "⏰ Cooldown",
+            f"This command is on cooldown. Try again in {error.retry_after:.1f} seconds.",
+            discord.Color.orange()
+        )
+    elif isinstance(error, app_commands.MissingPermissions):
+        embed = create_embed(
+            "🔒 Missing Permissions",
+            "You don't have permission to use this command.",
+            discord.Color.red()
+        )
+    else:
+        embed = create_embed(
+            "💥 Command Error",
+            "An unexpected error occurred. Please try again later.",
+            discord.Color.red()
+        )
+    
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    except Exception as e:
+        logger.error(f"Could not send error message: {e}")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Handle voice state changes for music cleanup."""
+    # If bot was disconnected from voice, clean up
+    if member == bot.user and before.channel is not None and after.channel is None:
+        guild_id = before.channel.guild.id
+        if guild_id in bot_state.music_queues:
+            bot_state.music_queues[guild_id].clear()
+            logger.info(f"Cleaned up music queue for guild {guild_id}")
+
+# ========== Background Tasks ==========
+@tasks.loop(minutes=30)
+async def status_update_task():
+    """Update bot status periodically."""
+    activities = [
+        discord.Activity(type=discord.ActivityType.listening, name=f"/help • {len(bot.guilds)} servers"),
+        discord.Activity(type=discord.ActivityType.playing, name="trivia games"),
+        discord.Activity(type=discord.ActivityType.watching, name="the weather"),
+    ]
+    
+    activity = random.choice(activities)
+    await bot.change_presence(activity=activity)
+
+# ========== Cleanup and Shutdown Handlers ==========
 async def cleanup_resources():
-    """Clean up resources on shutdown."""
-    await cleanup_http_session()
+    """Comprehensive resource cleanup."""
+    logger.info("🧹 Starting cleanup...")
+    
+    # Close HTTP session
+    await bot_state.cleanup()
+    
+    # Disconnect from all voice channels
+    for guild in bot.guilds:
+        if guild.voice_client:
+            await guild.voice_client.disconnect()
+    
+    # Clear music queues
+    bot_state.music_queues.clear()
+    
+    logger.info("✅ Cleanup completed")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    logger.info(f"📥 Received signal {signum}, shutting down gracefully...")
+    asyncio.create_task(cleanup_resources())
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 @bot.event
 async def on_disconnect():
     """Handle bot disconnect."""
-    logger.info("Bot disconnected, cleaning up resources...")
+    logger.info("🔌 Bot disconnected")
     await cleanup_resources()
 
-# ========== Bot Startup Function ==========
-def start_discord_bot() -> None:
-    """Start the Discord bot with proper error handling."""
+# ========== Enhanced Bot Startup Function ==========
+def start_discord_bot():
+    """Start Discord bot with enhanced error handling and logging."""
     try:
-        logger.info("Starting Discord bot...")
+        logger.info("🚀 Starting Discord bot...")
         bot.run(DISCORD_TOKEN)
     except discord.LoginFailure:
-        logger.critical("Invalid Discord token! Check your .env file.")
-        exit(1)
+        logger.critical("❌ Invalid Discord token! Check your .env file.")
+        sys.exit(1)
     except discord.HTTPException as e:
-        logger.critical(f"Discord HTTP error: {e}")
-        exit(1)
+        logger.critical(f"❌ Discord HTTP error: {e}")
+        sys.exit(1)
     except KeyboardInterrupt:
-        logger.info("Bot shutdown requested by user.")
+        logger.info("⏹️ Bot shutdown requested by user")
     except Exception as e:
-        logger.critical(f"Bot startup failed: {e}")
-        exit(1)
+        logger.critical(f"💥 Bot startup failed: {e}", exc_info=True)
+        sys.exit(1)
     finally:
         # Ensure cleanup happens
-        import asyncio
+        logger.info("🔄 Running final cleanup...")
         asyncio.run(cleanup_resources())
 
 # ========== Application Entry Points ==========
 if __name__ != "__main__":
+    # When imported as module (for deployment)
     Thread(target=start_discord_bot, daemon=False).start()
 
+# Flask app for external access
 application = app
 
 if __name__ == "__main__":
+    # When run directly
+    import atexit
+    atexit.register(lambda: asyncio.run(cleanup_resources()))
+    
+    # Start Flask server in background
     Thread(
         target=lambda: app.run(
             host="0.0.0.0",
@@ -617,8 +1456,10 @@ if __name__ == "__main__":
             debug=False,
             use_reloader=False
         ),
-        daemon=False
+        daemon=True
     ).start()
     
-    # Start Discord bot in main thread when running directly
+    logger.info(f"🌐 Flask server starting on port {os.getenv('PORT', 5000)}")
+    
+    # Start Discord bot in main thread
     start_discord_bot()
