@@ -27,10 +27,13 @@ from python_weather.errors import Error, RequestError
 
 try:
     import yt_dlp
+    import discord.voice_client  # This will fail if PyNaCl is not available
     YT_DLP_AVAILABLE = True
+    VOICE_AVAILABLE = True
 except ImportError:
     YT_DLP_AVAILABLE = False
-    logging.warning("yt-dlp not available. Music functionality will be disabled.")
+    VOICE_AVAILABLE = False
+    logging.warning("yt-dlp or voice dependencies not available. Music functionality will be disabled.")
 
 # ========== Configuration Constants ==========
 class Config:
@@ -211,7 +214,10 @@ intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
 intents.guilds = True
-intents.voice_states = True
+
+# Only enable voice intents if voice is available
+if VOICE_AVAILABLE:
+    intents.voice_states = True
 
 bot = commands.Bot(
     command_prefix="!",
@@ -278,7 +284,10 @@ def format_duration(seconds: int) -> str:
 # ========== Rate Limiting Decorator ==========
 def rate_limit(func):
     """Decorator to add rate limiting to commands."""
-    async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+    import functools
+    
+    @functools.wraps(func)
+    async def wrapper(interaction: discord.Interaction, *args: Any, **kwargs: Any) -> Any:
         if bot_state.is_rate_limited(interaction.user.id):
             embed = create_embed(
                 "Rate Limited",
@@ -288,10 +297,13 @@ def rate_limit(func):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
         
         return await func(interaction, *args, **kwargs)
+    
+    # Copy the original function's annotations to the wrapper
+    wrapper.__annotations__ = func.__annotations__.copy()
     return wrapper
 
 # ========== Enhanced Music System ==========
-if YT_DLP_AVAILABLE:
+if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
     class MusicSource(discord.PCMVolumeTransformer):
         def __init__(self, source, *, data, volume=0.5):
             super().__init__(source, volume)
@@ -728,8 +740,8 @@ async def help_command(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
-# Music commands (only if yt-dlp is available)
-if YT_DLP_AVAILABLE:
+# Music commands (only if yt-dlp and voice are available)
+if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
     @bot.tree.command(name="play", description="Play a song or add it to the queue.")
     @app_commands.describe(query="Song name or YouTube URL")
     @rate_limit
@@ -1359,6 +1371,9 @@ async def on_application_command_error(interaction: discord.Interaction, error: 
 @bot.event
 async def on_voice_state_update(member, before, after):
     """Handle voice state changes for music cleanup."""
+    if not VOICE_AVAILABLE:
+        return
+        
     # If bot was disconnected from voice, clean up
     if member == bot.user and before.channel is not None and after.channel is None:
         guild_id = before.channel.guild.id
@@ -1387,10 +1402,11 @@ async def cleanup_resources():
     # Close HTTP session
     await bot_state.cleanup()
     
-    # Disconnect from all voice channels
-    for guild in bot.guilds:
-        if guild.voice_client:
-            await guild.voice_client.disconnect()
+    # Disconnect from all voice channels (if voice is available)
+    if VOICE_AVAILABLE:
+        for guild in bot.guilds:
+            if guild.voice_client:
+                await guild.voice_client.disconnect()
     
     # Clear music queues
     bot_state.music_queues.clear()
@@ -1418,7 +1434,18 @@ def start_discord_bot():
     """Start Discord bot with enhanced error handling and logging."""
     try:
         logger.info("🚀 Starting Discord bot...")
-        bot.run(DISCORD_TOKEN)
+        
+        # Check if we're running in a deployment environment
+        is_deployment = os.getenv("DEPLOYMENT") == "true" or "gunicorn" in os.environ.get("SERVER_SOFTWARE", "")
+        
+        if is_deployment:
+            logger.info("🔧 Running in deployment mode")
+            # In deployment, just run the bot without additional setup
+            bot.run(DISCORD_TOKEN, log_handler=None)  # Disable discord.py's default logging
+        else:
+            logger.info("🔧 Running in development mode")
+            bot.run(DISCORD_TOKEN)
+            
     except discord.LoginFailure:
         logger.critical("❌ Invalid Discord token! Check your .env file.")
         sys.exit(1)
@@ -1433,7 +1460,10 @@ def start_discord_bot():
     finally:
         # Ensure cleanup happens
         logger.info("🔄 Running final cleanup...")
-        asyncio.run(cleanup_resources())
+        try:
+            asyncio.run(cleanup_resources())
+        except Exception as cleanup_error:
+            logger.error(f"Error during cleanup: {cleanup_error}")
 
 # ========== Application Entry Points ==========
 if __name__ != "__main__":
