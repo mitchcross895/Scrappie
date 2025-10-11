@@ -895,7 +895,143 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             await interaction.followup.send(
                 "❌ Sorry, I couldn't play that song or playlist. Please try a different search term or URL."
             )
+# Add these helper functions after the play_command definition
+# This goes right after the play_command function ends
 
+# === helper to schedule next song only if still connected ===
+async def _schedule_next_if_connected(voice_client, guild_key, channel):
+    """Schedule next song if voice client is still connected."""
+    if not voice_client or not getattr(voice_client, "is_connected", lambda: False)():
+        return
+    await play_next_song(voice_client, guild_key, channel)
+
+# === play_next_song (module-level) ===
+async def play_next_song(voice_client, guild_key, channel):
+    """Play the next song in the queue."""
+    try:
+        if guild_key in bot_state.music_queues and bot_state.music_queues[guild_key]:
+            audio_url, title = bot_state.music_queues[guild_key].popleft()
+            
+            ffmpeg_options = {
+                "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                "options": "-vn -c:a libopus -b:a 96k",
+            }
+            
+            source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="ffmpeg")
+            
+            def after_play(error):
+                if error:
+                    logger.error(f"Error playing {title}: {error}")
+                # schedule the next song on the bot loop, but check connected first
+                asyncio.run_coroutine_threadsafe(
+                    _schedule_next_if_connected(voice_client, guild_key, channel),
+                    bot.loop
+                )
+            
+            voice_client.play(source, after=after_play)
+            
+            # Send now playing message
+            try:
+                embed = create_embed(
+                    "🎵 Now Playing",
+                    f"**{title}**",
+                    discord.Color.blue()
+                )
+                await channel.send(embed=embed)
+            except Exception as e:
+                logger.error(f"Error sending now playing message: {e}")
+        else:
+            # No more songs in queue, disconnect
+            try:
+                if getattr(voice_client, "is_connected", lambda: False)():
+                    await voice_client.disconnect()
+                if guild_key in bot_state.music_queues:
+                    bot_state.music_queues[guild_key].clear()
+            except Exception as e:
+                logger.error(f"Error disconnecting voice client: {e}")
+    except Exception as e:
+        logger.exception(f"Unexpected error in play_next_song: {e}")
+
+
+# === stop command (add this with other commands) ===
+if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
+    @bot.tree.command(name="stop", description="Stop the current song and clear the queue.")
+    async def stop_command(interaction: discord.Interaction):
+        """Stop music and clear queue."""
+        voice_client = interaction.guild.voice_client
+        
+        if not voice_client or not getattr(voice_client, "is_connected", lambda: False)():
+            return await interaction.response.send_message(
+                "❌ I'm not connected to a voice channel!", 
+                ephemeral=True
+            )
+        
+        # Stop current playback if any
+        try:
+            if voice_client.is_playing() or voice_client.is_paused():
+                voice_client.stop()
+        except Exception as e:
+            logger.error(f"Error stopping playback: {e}")
+        
+        # Clear queue using string key
+        guild_key = str(interaction.guild_id)
+        if guild_key in bot_state.music_queues:
+            bot_state.music_queues[guild_key].clear()
+        
+        embed = create_embed(
+            "⏹️ Music Stopped",
+            "Playback stopped and queue cleared.",
+            discord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed)
+
+
+    # === leave command ===
+    @bot.tree.command(name="leave", description="Leave the voice channel.")
+    async def leave_command(interaction: discord.Interaction):
+        """Leave voice channel."""
+        voice_client = interaction.guild.voice_client
+        
+        if not voice_client or not getattr(voice_client, "is_connected", lambda: False)():
+            return await interaction.response.send_message(
+                "❌ I'm not in a voice channel!", 
+                ephemeral=True
+            )
+        
+        channel_name = getattr(voice_client.channel, "name", "Unknown")
+        try:
+            await voice_client.disconnect()
+        except Exception as e:
+            logger.error(f"Error disconnecting: {e}")
+        
+        # Clear queue using string key
+        guild_key = str(interaction.guild_id)
+        if guild_key in bot_state.music_queues:
+            bot_state.music_queues[guild_key].clear()
+        
+        embed = create_embed(
+            "👋 Left Voice Channel",
+            f"Disconnected from **{channel_name}**",
+            discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed)
+
+
+# Update the help command to include new music commands
+# Find your existing help_command and update the Music Commands section:
+"""
+# Music Commands (if available)
+if YT_DLP_AVAILABLE:
+    embed.add_field(
+        name="🎵 Music Commands",
+        value="`/play <song>` - Play music or add playlist\n"
+              "`/queue` - View current queue\n"
+              "`/skip` - Skip current song\n"
+              "`/stop` - Stop music and clear queue\n"
+              "`/leave` - Leave voice channel",
+        inline=False
+    )
+"""
 
 # Add a new command to view the queue
 @bot.tree.command(name="queue", description="View the current music queue.")
