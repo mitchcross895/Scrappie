@@ -740,8 +740,8 @@ def _extract(query, ydl_opts):
 
 # === play command (unchanged logic, but uses consistent guild_key) ===
 if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
-    @bot.tree.command(name="play", description="Play a song or add it to the queue.")
-    @app_commands.describe(song_query="Search query")
+    @bot.tree.command(name="play", description="Play a song or add it to the queue. Supports playlists!")
+    @app_commands.describe(song_query="Search query or YouTube URL (supports playlists)")
     @rate_limit
     async def play_command(interaction: discord.Interaction, song_query: str):
         await interaction.response.defer()
@@ -759,95 +759,186 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         elif voice_channel != voice_client.channel:
             await voice_client.move_to(voice_channel)
         
+        # Check if it's a URL (playlist or single video)
+        is_url = song_query.startswith(('http://', 'https://'))
+        is_playlist = 'playlist' in song_query.lower() or 'list=' in song_query
+        
         ydl_options = {
             "format": "bestaudio[abr<=96]/bestaudio",
-            "noplaylist": True,
+            "noplaylist": not is_playlist,  # Allow playlists if detected
             "youtube_include_dash_manifest": False,
             "youtube_include_hls_manifest": False,
+            "extract_flat": "in_playlist" if is_playlist else False,  # Speed up playlist extraction
         }
         
-        query = "ytsearch1: " + song_query
+        # If not a URL, search for it
+        query = song_query if is_url else "ytsearch1: " + song_query
         
         try:
             results = await search_ytdlp_async(query, ydl_options)
-            tracks = results.get("entries", [])
             
-            if not tracks:
-                await interaction.followup.send("No results found.")
-                return
-            
-            first_track = tracks[0]
-            audio_url = first_track["url"]
-            title = first_track.get("title", "Untitled")
-            
-            guild_key = str(interaction.guild_id)   # <-- unified key type (string)
-            if guild_key not in bot_state.music_queues:
-                bot_state.music_queues[guild_key] = deque()
-            
-            bot_state.music_queues[guild_key].append((audio_url, title))
-            
-            if voice_client.is_playing() or voice_client.is_paused():
-                await interaction.followup.send(f"Added to queue: **{title}**")
-            else:
-                await interaction.followup.send(f"Now playing: **{title}**")
-                await play_next_song(voice_client, guild_key, interaction.channel)
+            # Handle playlist
+            if is_playlist and results.get("_type") == "playlist":
+                entries = results.get("entries", [])
                 
-        except Exception as e:
-            logger.error(f"Error in play command: {e}")
-            await interaction.followup.send("Sorry, I couldn't play that song. Please try a different search term.")
-
-# === helper to schedule next song only if still connected ===
-async def _schedule_next_if_connected(voice_client, guild_key, channel):
-    if not voice_client or not getattr(voice_client, "is_connected", lambda: False)():
-        return
-    await play_next_song(voice_client, guild_key, channel)
-
-# === play_next_song (module-level) ===
-async def play_next_song(voice_client, guild_key, channel):
-    """Play the next song in the queue."""
-    try:
-        if guild_key in bot_state.music_queues and bot_state.music_queues[guild_key]:
-            audio_url, title = bot_state.music_queues[guild_key].popleft()
-            
-            ffmpeg_options = {
-                "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-                "options": "-vn -c:a libopus -b:a 96k",
-            }
-            
-            source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="ffmpeg")
-            
-            def after_play(error):
-                if error:
-                    logger.error(f"Error playing {title}: {error}")
-                # schedule the next song on the bot loop, but check connected first
-                asyncio.run_coroutine_threadsafe(
-                    _schedule_next_if_connected(voice_client, guild_key, channel),
-                    bot.loop
+                if not entries:
+                    await interaction.followup.send("❌ No videos found in this playlist.")
+                    return
+                
+                # Filter out unavailable videos
+                valid_entries = [e for e in entries if e is not None]
+                
+                if not valid_entries:
+                    await interaction.followup.send("❌ All videos in this playlist are unavailable.")
+                    return
+                
+                playlist_title = results.get("title", "Unknown Playlist")
+                guild_key = str(interaction.guild_id)
+                
+                if guild_key not in bot_state.music_queues:
+                    bot_state.music_queues[guild_key] = deque()
+                
+                # Send initial response
+                embed = create_embed(
+                    "📝 Adding Playlist to Queue",
+                    f"Processing **{playlist_title}**\nFound {len(valid_entries)} videos...",
+                    discord.Color.blue()
                 )
-            
-            voice_client.play(source, after=after_play)
-            
-            # Send now playing message
-            try:
-                await channel.send(f"Now playing: **{title}**")
-            except Exception as e:
-                logger.error(f"Error sending now playing message: {e}")
-        else:
-            # No more songs in queue, disconnect
-            try:
-                if getattr(voice_client, "is_connected", lambda: False)():
-                    await voice_client.disconnect()
-                if guild_key in bot_state.music_queues:
-                    bot_state.music_queues[guild_key].clear()
-            except Exception as e:
-                logger.error(f"Error disconnecting voice client: {e}")
-    except Exception as e:
-        logger.exception(f"Unexpected error in play_next_song: {e}")
+                await interaction.followup.send(embed=embed)
+                
+                # Add songs to queue
+                added_count = 0
+                for entry in valid_entries:
+                    try:
+                        # For flat extraction, we need to get full info
+                        if 'url' not in entry or not entry['url'].startswith('http'):
+                            video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+                            video_info = await search_ytdlp_async(video_url, {
+                                "format": "bestaudio[abr<=96]/bestaudio",
+                                "noplaylist": True,
+                            })
+                            audio_url = video_info.get("url")
+                            title = video_info.get("title", entry.get("title", "Unknown"))
+                        else:
+                            audio_url = entry["url"]
+                            title = entry.get("title", "Unknown")
+                        
+                        if audio_url:
+                            bot_state.music_queues[guild_key].append((audio_url, title))
+                            added_count += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to add song from playlist: {e}")
+                        continue
+                
+                # Send final response
+                embed = create_embed(
+                    "✅ Playlist Added",
+                    f"Added **{added_count}** songs from **{playlist_title}** to the queue!",
+                    discord.Color.green()
+                )
+                embed.add_field(
+                    name="Queue Position",
+                    value=f"{len(bot_state.music_queues[guild_key])} total songs in queue",
+                    inline=False
+                )
+                await interaction.channel.send(embed=embed)
+                
+                # Start playing if not already playing
+                if not voice_client.is_playing() and not voice_client.is_paused():
+                    await play_next_song(voice_client, guild_key, interaction.channel)
+                
+            else:
+                # Handle single track (original logic)
+                tracks = results.get("entries", [results])
+                
+                if not tracks or (isinstance(tracks, list) and not tracks[0]):
+                    await interaction.followup.send("❌ No results found.")
+                    return
+                
+                first_track = tracks[0] if isinstance(tracks, list) else tracks
+                audio_url = first_track.get("url")
+                title = first_track.get("title", "Untitled")
+                
+                if not audio_url:
+                    await interaction.followup.send("❌ Could not extract audio URL.")
+                    return
+                
+                guild_key = str(interaction.guild_id)
+                if guild_key not in bot_state.music_queues:
+                    bot_state.music_queues[guild_key] = deque()
+                
+                bot_state.music_queues[guild_key].append((audio_url, title))
+                
+                if voice_client.is_playing() or voice_client.is_paused():
+                    embed = create_embed(
+                        "✅ Added to Queue",
+                        f"**{title}**",
+                        discord.Color.green()
+                    )
+                    embed.add_field(
+                        name="Position in Queue",
+                        value=f"#{len(bot_state.music_queues[guild_key])}",
+                        inline=True
+                    )
+                    await interaction.followup.send(embed=embed)
+                else:
+                    embed = create_embed(
+                        "🎵 Now Playing",
+                        f"**{title}**",
+                        discord.Color.blue()
+                    )
+                    await interaction.followup.send(embed=embed)
+                    await play_next_song(voice_client, guild_key, interaction.channel)
+                    
+        except Exception as e:
+            logger.error(f"Error in play command: {e}", exc_info=True)
+            await interaction.followup.send(
+                "❌ Sorry, I couldn't play that song or playlist. Please try a different search term or URL."
+            )
 
-# === stop command (module-level, uses same guild_key type) ===
-@bot.tree.command(name="stop", description="Stop the current song and clear the queue.")
-async def stop_command(interaction: discord.Interaction):
-    """Stop music and clear queue."""
+
+# Add a new command to view the queue
+@bot.tree.command(name="queue", description="View the current music queue.")
+async def queue_command(interaction: discord.Interaction):
+    """Display the current music queue."""
+    guild_key = str(interaction.guild_id)
+    
+    if guild_key not in bot_state.music_queues or not bot_state.music_queues[guild_key]:
+        embed = create_embed(
+            "📋 Queue Empty",
+            "There are no songs in the queue. Use `/play` to add some!",
+            discord.Color.orange()
+        )
+        return await interaction.response.send_message(embed=embed)
+    
+    queue = bot_state.music_queues[guild_key]
+    
+    # Create embed showing queue
+    embed = create_embed(
+        "🎵 Music Queue",
+        f"**{len(queue)}** songs in queue",
+        discord.Color.blue()
+    )
+    
+    # Show up to 10 songs
+    for idx, (_, title) in enumerate(list(queue)[:10], 1):
+        status = "▶️ Now Playing" if idx == 1 else f"#{idx}"
+        embed.add_field(
+            name=status,
+            value=title[:100],  # Truncate long titles
+            inline=False
+        )
+    
+    if len(queue) > 10:
+        embed.set_footer(text=f"... and {len(queue) - 10} more songs")
+    
+    await interaction.response.send_message(embed=embed)
+
+
+# Add a command to skip the current song
+@bot.tree.command(name="skip", description="Skip the current song.")
+async def skip_command(interaction: discord.Interaction):
+    """Skip the current song."""
     voice_client = interaction.guild.voice_client
     
     if not voice_client or not getattr(voice_client, "is_connected", lambda: False)():
@@ -856,51 +947,18 @@ async def stop_command(interaction: discord.Interaction):
             ephemeral=True
         )
     
-    # Stop current playback if any
-    try:
-        if voice_client.is_playing() or voice_client.is_paused():
-            voice_client.stop()
-    except Exception as e:
-        logger.error(f"Error stopping playback: {e}")
-    
-    # Clear queue using string key
-    guild_key = str(interaction.guild_id)
-    if guild_key in bot_state.music_queues:
-        bot_state.music_queues[guild_key].clear()
-    
-    embed = create_embed(
-        "⏹️ Music Stopped",
-        "Playback stopped and queue cleared.",
-        discord.Color.orange()
-    )
-    await interaction.response.send_message(embed=embed)
-
-# === leave command (module-level) ===
-@bot.tree.command(name="leave", description="Leave the voice channel.")
-async def leave_command(interaction: discord.Interaction):
-    """Leave voice channel."""
-    voice_client = interaction.guild.voice_client
-    
-    if not voice_client or not getattr(voice_client, "is_connected", lambda: False)():
+    if not voice_client.is_playing() and not voice_client.is_paused():
         return await interaction.response.send_message(
-            "❌ I'm not in a voice channel!", 
+            "❌ Nothing is currently playing!", 
             ephemeral=True
         )
     
-    channel_name = getattr(voice_client.channel, "name", "Unknown")
-    try:
-        await voice_client.disconnect()
-    except Exception as e:
-        logger.error(f"Error disconnecting: {e}")
-    
-    # Clear queue using string key
-    guild_key = str(interaction.guild_id)
-    if guild_key in bot_state.music_queues:
-        bot_state.music_queues[guild_key].clear()
+    # Stop current song (this will trigger the after_play callback which plays next song)
+    voice_client.stop()
     
     embed = create_embed(
-        "👋 Left Voice Channel",
-        f"Disconnected from **{channel_name}**",
+        "⏭️ Skipped",
+        "Skipped to the next song!",
         discord.Color.blue()
     )
     await interaction.response.send_message(embed=embed)
