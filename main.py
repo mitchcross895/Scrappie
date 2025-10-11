@@ -310,7 +310,7 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         'format': 'bestaudio/best',
         'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
         'restrictfilenames': True,
-        'noplaylist': True,
+        'noplaylist': False,
         'nocheckcertificate': True,
         'ignoreerrors': False,
         'logtostderr': False,
