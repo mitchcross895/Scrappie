@@ -308,7 +308,7 @@ def rate_limit(func):
 # ========== Enhanced Music System ==========
 if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
     ytdl_format_options = {
-        'format': 'bestaudio/best',
+        'format': 'bestaudio[ext=webm]/bestaudio/best',
         'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
         'restrictfilenames': True,
         'noplaylist': False,
@@ -322,6 +322,8 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         'extract_flat': False,
         'cookiefile': None,
         'age_limit': None,
+        'geo_bypass': True,
+        'nocache': True,
     }
 
     ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
@@ -352,10 +354,14 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             loop = loop or asyncio.get_event_loop()
             
             # Extract info in executor to avoid blocking
-            data = await loop.run_in_executor(
-                None, 
-                lambda: ytdl.extract_info(url, download=not stream)
-            )
+            try:
+                data = await loop.run_in_executor(
+                    None, 
+                    lambda: ytdl.extract_info(url, download=not stream)
+                )
+            except Exception as e:
+                logger.error(f"yt-dlp extraction failed for {url}: {e}")
+                raise
             
             if 'entries' in data:
                 # Playlist - take first item
@@ -363,21 +369,29 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             
             filename = data['url'] if stream else ytdl.prepare_filename(data)
             
-            # FFmpeg options optimized for streaming
+            # FFmpeg options optimized for streaming with better error handling
             ffmpeg_options = {
-                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                'options': '-vn -b:a 128k'
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostats -loglevel error',
+                'options': '-vn -ar 48000 -ac 2 -b:a 128k -bufsize 512k'
             }
             
-            return cls(
-                discord.FFmpegPCMAudio(filename, **ffmpeg_options),
-                data=data
-            )
+            try:
+                source = discord.FFmpegPCMAudio(filename, **ffmpeg_options, executable='ffmpeg')
+            except Exception as e:
+                logger.error(f"FFmpeg failed to create audio source: {e}")
+                raise
+            
+            return cls(source, data=data)
 
     # Music playback functions
     async def play_next_song(voice_client, guild_key, channel):
         """Play the next song in the queue with fresh URL extraction."""
         try:
+            # Check if voice client is still valid
+            if not voice_client or not getattr(voice_client, "is_connected", lambda: False)():
+                logger.info(f"Voice client disconnected for guild {guild_key}")
+                return
+            
             if guild_key not in bot_state.music_queues or not bot_state.music_queues[guild_key]:
                 # No more songs, disconnect after a delay
                 await asyncio.sleep(3)
@@ -400,21 +414,39 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             try:
                 # Extract fresh audio URL right before playing
                 logger.info(f"Extracting audio for: {title}")
-                player = await YTDLSource.from_url(video_url, loop=bot.loop, stream=True)
+                
+                # Add timeout for extraction
+                try:
+                    player = await asyncio.wait_for(
+                        YTDLSource.from_url(video_url, loop=bot.loop, stream=True),
+                        timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout extracting audio for {title}")
+                    raise Exception("Audio extraction timed out")
                 
                 def after_play(error):
                     if error:
-                        logger.error(f"Error playing {title}: {error}")
-                        # Try to send error message
-                        asyncio.run_coroutine_threadsafe(
-                            channel.send(f"❌ Error playing **{title}**: {error}"),
-                            bot.loop
-                        )
+                        logger.error(f"Playback error for {title}: {error}")
+                    
+                    # Cleanup player
+                    try:
+                        if hasattr(player, 'cleanup'):
+                            player.cleanup()
+                    except Exception as cleanup_error:
+                        logger.error(f"Error during player cleanup: {cleanup_error}")
+                    
                     # Schedule the next song on the bot loop
-                    asyncio.run_coroutine_threadsafe(
-                        _schedule_next_if_connected(voice_client, guild_key, channel),
-                        bot.loop
-                    )
+                    coro = _schedule_next_if_connected(voice_client, guild_key, channel)
+                    fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)
+                    try:
+                        fut.result(timeout=5)
+                    except Exception as e:
+                        logger.error(f"Error scheduling next song: {e}")
+                
+                # Stop any current playback before starting new song
+                if voice_client.is_playing():
+                    voice_client.stop()
                 
                 voice_client.play(player, after=after_play)
                 bot_state.now_playing[guild_key] = title
@@ -448,7 +480,7 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
                     logger.error(f"Error sending now playing message: {e}")
                     
             except Exception as e:
-                logger.error(f"Error extracting/playing {title}: {e}")
+                logger.error(f"Error extracting/playing {title}: {e}", exc_info=True)
                 # Send error message and try next song
                 try:
                     embed = create_embed(
@@ -460,8 +492,9 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
                 except:
                     pass
                 
-                # Try next song
-                if bot_state.music_queues[guild_key]:
+                # Try next song after a short delay
+                await asyncio.sleep(1)
+                if bot_state.music_queues.get(guild_key):
                     await play_next_song(voice_client, guild_key, channel)
                 
         except Exception as e:
@@ -469,6 +502,16 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             # Clear the queue on catastrophic failure
             if guild_key in bot_state.music_queues:
                 bot_state.music_queues[guild_key].clear()
+            
+            try:
+                embed = create_embed(
+                    "💥 Fatal Error",
+                    "Music playback encountered a fatal error. Queue has been cleared.",
+                    discord.Color.dark_red()
+                )
+                await channel.send(embed=embed)
+            except:
+                pass
 
     async def _schedule_next_if_connected(voice_client, guild_key, channel):
         """Schedule next song if voice client is still connected."""
