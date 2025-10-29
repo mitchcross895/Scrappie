@@ -1,5 +1,8 @@
 [phases.setup]
-aptPkgs = ["ffmpeg"]
+aptPkgs = ["ffmpeg", "libopus0", "libopus-dev", "libffi-dev", "libnacl-dev", "python3-dev"]
+
+[phases.install]
+cmds = ["pip install --upgrade pip setuptools wheel"]
 
 [start]
 cmd = "python main.py"

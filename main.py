@@ -31,6 +31,19 @@ try:
     import discord.voice_client  # This will fail if PyNaCl is not available
     YT_DLP_AVAILABLE = True
     VOICE_AVAILABLE = True
+    
+    # Try to load Opus
+    try:
+        discord.opus.load_opus('libopus.so.0')
+    except:
+        try:
+            discord.opus.load_opus('libopus.so')
+        except:
+            try:
+                discord.opus.load_opus('opus')
+            except:
+                logging.warning("Could not load opus library. Voice may not work properly.")
+    
 except ImportError:
     YT_DLP_AVAILABLE = False
     VOICE_AVAILABLE = False
