@@ -219,7 +219,11 @@ def create_embed(title: str, description: str = None, color: discord.Color = dis
     embed = discord.Embed(title=title, description=description, color=color)
     for key in ('author', 'footer', 'thumbnail', 'image'):
         if key in kwargs:
-            getattr(embed, f'set_{key}')(**kwargs[key] if key in ('author', 'footer') else url=kwargs[key])
+            setter = getattr(embed, f'set_{key}')
+            if key in ('author', 'footer'):
+                setter(**kwargs[key])
+            else:
+                setter(url=kwargs[key])
     return embed
 
 async def safe_api_request(url: str, params: dict = None, headers: dict = None) -> Optional[dict]:
