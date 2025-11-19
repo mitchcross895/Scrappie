@@ -85,10 +85,3 @@ The bot will start a Flask health server on `0.0.0.0:$PORT` (default 5000) and c
 ## Contributing
 
 Pull requests welcome. Keep changes focused and run linters/tests before submitting.
-
----
-
-If you'd like, I can:
-- Add more detailed operation examples for each command,
-- Add instructions to run the bot in Docker/Gunicorn, or
-- Add a CONTRIBUTING.md with local testing steps.
