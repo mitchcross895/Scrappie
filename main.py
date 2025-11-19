@@ -20,7 +20,6 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, Button, Select
 from flask import Flask, jsonify
-from spellchecker import SpellChecker
 import randfacts
 from dotenv import load_dotenv
 import python_weather
@@ -146,7 +145,7 @@ class BotState:
     def __init__(self):
         self.start_time = datetime.datetime.utcnow()
         self.http_session: Optional[aiohttp.ClientSession] = None
-        self.spell_checker = None
+        # spellchecker removed
         self.music_queues: Dict[str, deque] = {}
         self.request_counts: Dict[int, List] = {}
         self.now_playing: Dict[str, Optional[str]] = {}
@@ -154,17 +153,6 @@ class BotState:
         
     async def initialize(self):
         await self.get_http_session()
-        self.setup_spell_checker()
-    
-    def setup_spell_checker(self):
-        self.spell_checker = SpellChecker()
-        words_file = Path(Config.ADDED_WORDS_FILE)
-        if words_file.exists():
-            try:
-                self.spell_checker.word_frequency.load_text_file(str(words_file))
-                logger.info(f"Loaded custom words from {Config.ADDED_WORDS_FILE}")
-            except Exception as e:
-                logger.warning(f"Could not load custom words: {e}")
     
     async def get_http_session(self) -> aiohttp.ClientSession:
         if self.http_session is None or self.http_session.closed:
@@ -546,6 +534,36 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         voice_client.stop()
         embed = create_embed("⏭️ Skipped", "Skipped to next song!", discord.Color.blue())
         await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(name="shuffle", description="Shuffle the music queue.")
+    async def shuffle_command(interaction: discord.Interaction):
+        guild_key = str(interaction.guild_id)
+        queue = bot_state.music_queues.get(guild_key)
+
+        if not queue or len(queue) == 0:
+            embed = create_embed("📋 Queue Empty", "No songs to shuffle. Use `/play` to add.", discord.Color.orange())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        if len(queue) < 2:
+            embed = create_embed("🔀 Nothing To Shuffle", "Need at least 2 songs to shuffle.", discord.Color.orange())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        try:
+            q_list = list(queue)
+            random.shuffle(q_list)
+            bot_state.music_queues[guild_key] = deque(q_list)
+
+            embed = create_embed("🔀 Queue Shuffled", f"Shuffled **{len(q_list)}** songs.", discord.Color.green())
+
+            upcoming = "\n".join(f"#{i+1} {t[1][:100]}" for i, t in enumerate(list(bot_state.music_queues[guild_key])[:5]))
+            if upcoming:
+                embed.add_field(name="Up Next", value=upcoming, inline=False)
+
+            await interaction.response.send_message(embed=embed)
+        except Exception as e:
+            logger.error(f"Error shuffling queue: {e}")
+            embed = create_embed("❌ Shuffle Error", "Couldn't shuffle the queue.", discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ========== Trivia System ==========
 class TriviaView(View):
