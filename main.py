@@ -12,6 +12,9 @@ import signal
 import sys
 from pathlib import Path
 from functools import wraps, lru_cache
+import hmac
+import hashlib
+from datetime import datetime
 
 # Third-party imports
 import discord
@@ -19,7 +22,7 @@ import aiohttp
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, Button, Select
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import randfacts
 from dotenv import load_dotenv
 import python_weather
@@ -68,9 +71,10 @@ class Config:
     TRIVIA_CATEGORIES_API = "https://opentdb.com/api_category.php"
     TRIVIA_API = "https://opentdb.com/api.php?amount=1&type=multiple"
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    ADDED_WORDS_FILE = "addedwords.txt"
     LOG_FILE = "bot.log"
     MAX_REQUESTS_PER_MINUTE = 30
+    GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+    GITHUB_CHANNEL_ID = int(os.getenv("GITHUB_CHANNEL_ID", "0"))
 
 MISSPELL_REPLIES = [
     "Let's try that again, shall we?",
@@ -1203,6 +1207,348 @@ async def on_voice_state_update(member, before, after):
     if before.channel and not after.channel:
         guild_key = str(before.channel.guild.id)
         bot_state.music_queues.pop(guild_key, None)
+
+@app.route('/github-webhook', methods=['POST'])
+def github_webhook():
+    """Handle GitHub webhook events."""
+    try:
+        # Verify webhook signature
+        signature = request.headers.get('X-Hub-Signature-256', '')
+        if Config.GITHUB_WEBHOOK_SECRET:
+            if not verify_github_signature(request.data, signature, Config.GITHUB_WEBHOOK_SECRET):
+                logger.warning("Invalid GitHub webhook signature")
+                return jsonify({"error": "Invalid signature"}), 401
+        
+        event_type = request.headers.get('X-GitHub-Event', 'unknown')
+        payload = request.json
+        
+        # Handle different event types
+        if event_type == 'push':
+            asyncio.run_coroutine_threadsafe(
+                handle_push_event(payload),
+                bot.loop
+            )
+        elif event_type == 'pull_request':
+            asyncio.run_coroutine_threadsafe(
+                handle_pr_event(payload),
+                bot.loop
+            )
+        elif event_type == 'issues':
+            asyncio.run_coroutine_threadsafe(
+                handle_issue_event(payload),
+                bot.loop
+            )
+        elif event_type == 'ping':
+            return jsonify({"message": "Webhook received!"}), 200
+        
+        return jsonify({"status": "success"}), 200
+        
+    except Exception as e:
+        logger.error(f"GitHub webhook error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+def verify_github_signature(payload_body, signature_header, secret):
+    """Verify that the payload was sent from GitHub by validating SHA256."""
+    if not signature_header:
+        return False
+    
+    hash_object = hmac.new(
+        secret.encode('utf-8'),
+        msg=payload_body,
+        digestmod=hashlib.sha256
+    )
+    expected_signature = "sha256=" + hash_object.hexdigest()
+    
+    return hmac.compare_digest(expected_signature, signature_header)
+
+async def handle_push_event(payload):
+    """Handle GitHub push events."""
+    try:
+        channel = bot.get_channel(Config.GITHUB_CHANNEL_ID)
+        if not channel:
+            logger.error(f"GitHub notification channel {Config.GITHUB_CHANNEL_ID} not found")
+            return
+        
+        # Extract push information
+        pusher = payload.get('pusher', {}).get('name', 'Unknown')
+        repo_name = payload.get('repository', {}).get('full_name', 'Unknown Repo')
+        repo_url = payload.get('repository', {}).get('html_url', '')
+        ref = payload.get('ref', 'refs/heads/main').split('/')[-1]  # Branch name
+        commits = payload.get('commits', [])
+        compare_url = payload.get('compare', '')
+        
+        # Don't send notification if no commits
+        if not commits:
+            return
+        
+        # Create embed
+        embed = discord.Embed(
+            title=f"🔨 New Push to {repo_name}",
+            description=f"**{pusher}** pushed {len(commits)} commit{'s' if len(commits) != 1 else ''} to `{ref}`",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add repository info
+        embed.add_field(
+            name="📦 Repository",
+            value=f"[{repo_name}]({repo_url})",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🌿 Branch",
+            value=f"`{ref}`",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📊 Commits",
+            value=f"{len(commits)}",
+            inline=True
+        )
+        
+        # Add commit details (up to 5 most recent)
+        commit_details = []
+        for commit in commits[:5]:
+            sha = commit.get('id', '')[:7]  # Short SHA
+            message = commit.get('message', 'No message').split('\n')[0][:100]  # First line only
+            author = commit.get('author', {}).get('name', 'Unknown')
+            commit_url = commit.get('url', '')
+            
+            commit_details.append(f"`{sha}` [{message}]({commit_url})\n👤 {author}")
+        
+        if commit_details:
+            embed.add_field(
+                name="📝 Commits",
+                value="\n\n".join(commit_details),
+                inline=False
+            )
+        
+        if len(commits) > 5:
+            embed.add_field(
+                name="➕ More",
+                value=f"... and {len(commits) - 5} more commit{'s' if len(commits) - 5 != 1 else ''}",
+                inline=False
+            )
+        
+        # Add compare link
+        if compare_url:
+            embed.add_field(
+                name="🔗 Compare Changes",
+                value=f"[View All Changes]({compare_url})",
+                inline=False
+            )
+        
+        # Set footer with pusher info
+        embed.set_footer(
+            text=f"Pushed by {pusher}",
+            icon_url=payload.get('sender', {}).get('avatar_url', '')
+        )
+        
+        await channel.send(embed=embed)
+        logger.info(f"Sent GitHub push notification for {repo_name}")
+        
+    except Exception as e:
+        logger.error(f"Error handling push event: {e}")
+
+async def handle_pr_event(payload):
+    """Handle GitHub pull request events."""
+    try:
+        channel = bot.get_channel(Config.GITHUB_CHANNEL_ID)
+        if not channel:
+            return
+        
+        action = payload.get('action', 'unknown')
+        pr = payload.get('pull_request', {})
+        repo_name = payload.get('repository', {}).get('full_name', 'Unknown Repo')
+        
+        # Only notify on opened, closed, or merged PRs
+        if action not in ['opened', 'closed', 'reopened', 'merged']:
+            return
+        
+        pr_number = pr.get('number', 0)
+        pr_title = pr.get('title', 'No title')
+        pr_url = pr.get('html_url', '')
+        author = pr.get('user', {}).get('login', 'Unknown')
+        avatar = pr.get('user', {}).get('avatar_url', '')
+        
+        # Determine color based on action
+        color_map = {
+            'opened': discord.Color.green(),
+            'closed': discord.Color.red(),
+            'reopened': discord.Color.orange(),
+            'merged': discord.Color.purple()
+        }
+        color = color_map.get(action, discord.Color.blue())
+        
+        # Determine emoji
+        emoji_map = {
+            'opened': '🟢',
+            'closed': '🔴',
+            'reopened': '🟠',
+            'merged': '🟣'
+        }
+        emoji = emoji_map.get(action, '📋')
+        
+        embed = discord.Embed(
+            title=f"{emoji} Pull Request #{pr_number} {action.capitalize()}",
+            description=f"**{pr_title}**",
+            url=pr_url,
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(name="📦 Repository", value=repo_name, inline=True)
+        embed.add_field(name="👤 Author", value=author, inline=True)
+        embed.add_field(name="🔢 PR Number", value=f"#{pr_number}", inline=True)
+        
+        embed.set_footer(text=f"Pull Request {action}", icon_url=avatar)
+        
+        await channel.send(embed=embed)
+        logger.info(f"Sent GitHub PR notification for {repo_name} PR #{pr_number}")
+        
+    except Exception as e:
+        logger.error(f"Error handling PR event: {e}")
+
+async def handle_issue_event(payload):
+    """Handle GitHub issue events."""
+    try:
+        channel = bot.get_channel(Config.GITHUB_CHANNEL_ID)
+        if not channel:
+            return
+        
+        action = payload.get('action', 'unknown')
+        issue = payload.get('issue', {})
+        repo_name = payload.get('repository', {}).get('full_name', 'Unknown Repo')
+        
+        # Only notify on opened or closed issues
+        if action not in ['opened', 'closed', 'reopened']:
+            return
+        
+        issue_number = issue.get('number', 0)
+        issue_title = issue.get('title', 'No title')
+        issue_url = issue.get('html_url', '')
+        author = issue.get('user', {}).get('login', 'Unknown')
+        avatar = issue.get('user', {}).get('avatar_url', '')
+        
+        color = discord.Color.green() if action == 'opened' else discord.Color.red()
+        emoji = '🟢' if action == 'opened' else '🔴'
+        
+        embed = discord.Embed(
+            title=f"{emoji} Issue #{issue_number} {action.capitalize()}",
+            description=f"**{issue_title}**",
+            url=issue_url,
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(name="📦 Repository", value=repo_name, inline=True)
+        embed.add_field(name="👤 Author", value=author, inline=True)
+        embed.add_field(name="🔢 Issue Number", value=f"#{issue_number}", inline=True)
+        
+        embed.set_footer(text=f"Issue {action}", icon_url=avatar)
+        
+        await channel.send(embed=embed)
+        logger.info(f"Sent GitHub issue notification for {repo_name} issue #{issue_number}")
+        
+    except Exception as e:
+        logger.error(f"Error handling issue event: {e}")
+
+# ========== Admin Commands for GitHub Setup ==========
+@bot.tree.command(name="github-setup", description="Set the channel for GitHub notifications (Admin only)")
+@app_commands.describe(channel="The channel to send GitHub notifications to")
+@app_commands.default_permissions(administrator=True)
+async def github_setup_command(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Set the GitHub notification channel."""
+    try:
+        # Update the config (you'll want to save this to a file or database in production)
+        Config.GITHUB_CHANNEL_ID = channel.id
+        
+        embed = create_embed(
+            "✅ GitHub Notifications Configured",
+            f"GitHub notifications will be sent to {channel.mention}",
+            discord.Color.green()
+        )
+        
+        # Add webhook URL info
+        webhook_url = f"{os.getenv('BOT_URL', 'https://your-bot-url.com')}/github-webhook"
+        embed.add_field(
+            name="📡 Webhook URL",
+            value=f"```{webhook_url}```",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="⚙️ Setup Instructions",
+            value=(
+                "1. Go to your GitHub repo → Settings → Webhooks\n"
+                "2. Click 'Add webhook'\n"
+                "3. Paste the webhook URL above\n"
+                "4. Set Content type to 'application/json'\n"
+                "5. Add your webhook secret (if configured)\n"
+                "6. Select events: Push, Pull Request, Issues\n"
+                "7. Click 'Add webhook'"
+            ),
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Send test message to the channel
+        test_embed = create_embed(
+            "🎉 GitHub Notifications Active",
+            "This channel will receive GitHub push notifications!",
+            discord.Color.green()
+        )
+        await channel.send(embed=test_embed)
+        
+    except Exception as e:
+        logger.error(f"Error in github-setup: {e}")
+        embed = create_embed("❌ Setup Failed", "Couldn't configure GitHub notifications.", discord.Color.red())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="github-test", description="Send a test GitHub notification (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def github_test_command(interaction: discord.Interaction):
+    """Send a test GitHub notification."""
+    try:
+        channel = bot.get_channel(Config.GITHUB_CHANNEL_ID)
+        if not channel:
+            return await interaction.response.send_message(
+                "❌ GitHub notification channel not configured. Use `/github-setup` first.",
+                ephemeral=True
+            )
+        
+        # Create test notification
+        embed = discord.Embed(
+            title="🔨 Test Push to your-repo/main",
+            description="**TestUser** pushed 2 commits to `main`",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(name="📦 Repository", value="[your-username/your-repo](https://github.com)", inline=True)
+        embed.add_field(name="🌿 Branch", value="`main`", inline=True)
+        embed.add_field(name="📊 Commits", value="2", inline=True)
+        
+        embed.add_field(
+            name="📝 Commits",
+            value=(
+                "`abc1234` [Added new feature](https://github.com)\n👤 TestUser\n\n"
+                "`def5678` [Fixed bug](https://github.com)\n👤 TestUser"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text="Pushed by TestUser • This is a test notification")
+        
+        await channel.send(embed=embed)
+        await interaction.response.send_message(f"✅ Test notification sent to {channel.mention}", ephemeral=True)
+        
+    except Exception as e:
+        logger.error(f"Error in github-test: {e}")
+        await interaction.response.send_message("❌ Failed to send test notification.", ephemeral=True)
 
 # ========== Background Tasks ==========
 @tasks.loop(minutes=30)
