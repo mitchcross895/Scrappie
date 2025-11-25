@@ -1148,6 +1148,9 @@ async def on_ready():
     if not status_update_task.is_running():
         status_update_task.start()
 
+    if not voice_keepalive.is_running():
+        voice_keepalive.start()
+
 @bot.event
 async def on_guild_join(guild):
     logger.info(f'📥 Joined: {guild.name}')
