@@ -295,8 +295,8 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             
             filename = data['url'] if stream else ytdl.prepare_filename(data)
             ffmpeg_options = {
-                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                'options': '-vn'
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -reconnect_at_eof 1 -multiple_requests 1',
+                'options': '-vn -b:a 128k'
             }
             
             try:
@@ -307,77 +307,128 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             
             return cls(source, data=data)
 
+    async def is_voice_connected(voice_client, guild_id) -> bool:
+        """Check if voice client is still valid and connected."""
+        if not voice_client:
+            return False
+        if not voice_client.is_connected():
+            return False
+        if voice_client.guild.id != guild_id:
+            return False
+        return True
+
     async def play_next_song(voice_client, guild_key, channel):
         try:
-            if not voice_client or not voice_client.is_connected():
+            guild_id = int(guild_key)
+            
+            # Verify connection
+            if not await is_voice_connected(voice_client, guild_id):
+                logger.warning(f"Voice client not connected for guild {guild_key}")
+                if guild_key in bot_state.music_queues:
+                    bot_state.music_queues[guild_key].clear()
+                if guild_key in bot_state.now_playing:
+                    del bot_state.now_playing[guild_key]
                 return
             
+            # Check queue
             if guild_key not in bot_state.music_queues or not bot_state.music_queues[guild_key]:
-                await asyncio.sleep(3)
-                if voice_client and voice_client.is_connected():
+                await asyncio.sleep(5)
+                # Recheck after wait
+                if (voice_client and voice_client.is_connected() and 
+                    (guild_key not in bot_state.music_queues or not bot_state.music_queues[guild_key])):
                     await voice_client.disconnect()
+                    if guild_key in bot_state.now_playing:
+                        del bot_state.now_playing[guild_key]
                     embed = create_embed("👋 Queue Finished", "All songs played. Disconnecting...", discord.Color.blue())
                     await channel.send(embed=embed)
                 return
             
             video_url, title = bot_state.music_queues[guild_key].popleft()
             
-            try:
-                player = await asyncio.wait_for(
-                    YTDLSource.from_url(video_url, loop=bot.loop, stream=True),
-                    timeout=30.0
-                )
-                
-                def after_play(error):
-                    if error:
-                        logger.error(f"Playback error for {title}: {error}")
-                    
-                    if hasattr(player, 'cleanup'):
-                        try:
-                            player.cleanup()
-                        except Exception as e:
-                            logger.error(f"Cleanup error: {e}")
-                    
-                    fut = asyncio.run_coroutine_threadsafe(
-                        _schedule_next_if_connected(voice_client, guild_key, channel),
-                        bot.loop
+            # Attempt to play with retry logic
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    player = await asyncio.wait_for(
+                        YTDLSource.from_url(video_url, loop=bot.loop, stream=True),
+                        timeout=45.0
                     )
-                    try:
-                        fut.result(timeout=5)
-                    except Exception as e:
-                        logger.error(f"Error scheduling next: {e}")
-                
-                if voice_client.is_playing():
-                    voice_client.stop()
-                
-                voice_client.play(player, after=after_play)
-                bot_state.now_playing[guild_key] = title
-                
-                embed = create_embed("🎵 Now Playing", f"**{title}**", discord.Color.blue())
-                if player.duration:
-                    embed.add_field(name="Duration", value=format_duration(int(player.duration)), inline=True)
-                if bot_state.music_queues[guild_key]:
-                    embed.add_field(name="Up Next", value=f"{len(bot_state.music_queues[guild_key])} songs", inline=True)
-                
-                await channel.send(embed=embed)
                     
-            except Exception as e:
-                logger.error(f"Error playing {title}: {e}")
-                embed = create_embed("❌ Playback Error", f"Couldn't play **{title}**. Skipping...", discord.Color.red())
-                await channel.send(embed=embed)
-                await asyncio.sleep(1)
-                if bot_state.music_queues.get(guild_key):
-                    await play_next_song(voice_client, guild_key, channel)
-                
+                    def after_play(error):
+                        if error:
+                            logger.error(f"Playback error for {title}: {error}")
+                        
+                        if hasattr(player, 'cleanup'):
+                            try:
+                                player.cleanup()
+                            except Exception as e:
+                                logger.error(f"Cleanup error: {e}")
+                        
+                        # Schedule next song
+                        fut = asyncio.run_coroutine_threadsafe(
+                            _schedule_next_if_connected(voice_client, guild_key, channel),
+                            bot.loop
+                        )
+                        try:
+                            fut.result(timeout=10)
+                        except Exception as e:
+                            logger.error(f"Error scheduling next: {e}")
+                    
+                    # Stop current playback if any
+                    if voice_client.is_playing():
+                        voice_client.stop()
+                        await asyncio.sleep(0.5)
+                    
+                    # Verify still connected before playing
+                    if not await is_voice_connected(voice_client, guild_id):
+                        logger.warning("Disconnected before play")
+                        return
+                    
+                    voice_client.play(player, after=after_play)
+                    bot_state.now_playing[guild_key] = title
+                    
+                    # Send now playing message
+                    embed = create_embed("🎵 Now Playing", f"**{title}**", discord.Color.blue())
+                    if player.duration:
+                        embed.add_field(name="Duration", value=format_duration(int(player.duration)), inline=True)
+                    if bot_state.music_queues[guild_key]:
+                        embed.add_field(name="Up Next", value=f"{len(bot_state.music_queues[guild_key])} songs", inline=True)
+                    
+                    await channel.send(embed=embed)
+                    break  # Success, exit retry loop
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout loading {title} (attempt {attempt + 1}/{max_retries})")
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"Error on attempt {attempt + 1} for {title}: {e}")
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(2)
+            
         except Exception as e:
-            logger.exception(f"Unexpected error in play_next_song: {e}")
-            if guild_key in bot_state.music_queues:
-                bot_state.music_queues[guild_key].clear()
-            embed = create_embed("💥 Fatal Error", "Music playback failed. Queue cleared.", discord.Color.dark_red())
+            logger.exception(f"Failed to play {title if 'title' in locals() else 'unknown'}: {e}")
+            embed = create_embed("❌ Playback Error", 
+                               f"Couldn't play **{title if 'title' in locals() else 'song'}**. Skipping...", 
+                               discord.Color.red())
             await channel.send(embed=embed)
+            
+            # Try next song if queue not empty
+            await asyncio.sleep(2)
+            if guild_key in bot_state.music_queues and bot_state.music_queues[guild_key]:
+                if voice_client and voice_client.is_connected():
+                    await play_next_song(voice_client, guild_key, channel)
+            elif voice_client and voice_client.is_connected():
+                await voice_client.disconnect()
+                if guild_key in bot_state.now_playing:
+                    del bot_state.now_playing[guild_key]
 
     async def _schedule_next_if_connected(voice_client, guild_key, channel):
-        if voice_client and voice_client.is_connected():
+        guild_id = int(guild_key)
+        if await is_voice_connected(voice_client, guild_id):
             await play_next_song(voice_client, guild_key, channel)
 
     @bot.tree.command(name="play", description="Play a song or add it to queue. Supports playlists!")
@@ -393,9 +444,19 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         voice_client = interaction.guild.voice_client
         
         if voice_client is None:
-            voice_client = await voice_channel.connect()
+            try:
+                voice_client = await voice_channel.connect(timeout=10.0, reconnect=True)
+            except asyncio.TimeoutError:
+                return await interaction.followup.send("❌ Failed to connect to voice channel. Try again.")
+            except Exception as e:
+                logger.error(f"Voice connection error: {e}")
+                return await interaction.followup.send("❌ Couldn't connect to voice channel.")
         elif voice_channel != voice_client.channel:
-            await voice_client.move_to(voice_channel)
+            try:
+                await voice_client.move_to(voice_channel)
+            except Exception as e:
+                logger.error(f"Voice move error: {e}")
+                return await interaction.followup.send("❌ Couldn't move to your voice channel.")
         
         guild_key = str(interaction.guild_id)
         bot_state.music_queues.setdefault(guild_key, deque())
@@ -454,11 +515,11 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             if voice_client.is_playing() or voice_client.is_paused():
                 embed = create_embed("✅ Added to Queue", f"**{title}**", discord.Color.green())
                 embed.add_field(name="Position", value=f"#{len(bot_state.music_queues[guild_key])}", inline=True)
+                await interaction.followup.send(embed=embed)
             else:
                 embed = create_embed("🎵 Starting Playback", f"**{title}**", discord.Color.blue())
+                await interaction.followup.send(embed=embed)
                 await play_next_song(voice_client, guild_key, interaction.channel)
-            
-            await interaction.followup.send(embed=embed)
                         
         except Exception as e:
             logger.error(f"Error in play command: {e}")
@@ -476,6 +537,8 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         guild_key = str(interaction.guild_id)
         if guild_key in bot_state.music_queues:
             bot_state.music_queues[guild_key].clear()
+        if guild_key in bot_state.now_playing:
+            del bot_state.now_playing[guild_key]
         
         embed = create_embed("⏹️ Music Stopped", "Playback stopped and queue cleared.", discord.Color.orange())
         await interaction.response.send_message(embed=embed)
@@ -492,6 +555,8 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         guild_key = str(interaction.guild_id)
         if guild_key in bot_state.music_queues:
             bot_state.music_queues[guild_key].clear()
+        if guild_key in bot_state.now_playing:
+            del bot_state.now_playing[guild_key]
         
         embed = create_embed("👋 Left Voice Channel", f"Disconnected from **{channel_name}**", discord.Color.blue())
         await interaction.response.send_message(embed=embed)
@@ -535,6 +600,35 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         embed = create_embed("⏭️ Skipped", "Skipped to next song!", discord.Color.blue())
         await interaction.response.send_message(embed=embed)
 
+    @bot.tree.command(name="pause", description="Pause current song.")
+    async def pause_command(interaction: discord.Interaction):
+        voice_client = interaction.guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            return await interaction.response.send_message("❌ Not in voice channel!", ephemeral=True)
+        
+        if voice_client.is_paused():
+            return await interaction.response.send_message("❌ Already paused!", ephemeral=True)
+        
+        if not voice_client.is_playing():
+            return await interaction.response.send_message("❌ Nothing playing!", ephemeral=True)
+        
+        voice_client.pause()
+        embed = create_embed("⏸️ Paused", "Music paused. Use `/resume` to continue.", discord.Color.orange())
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(name="resume", description="Resume paused song.")
+    async def resume_command(interaction: discord.Interaction):
+        voice_client = interaction.guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            return await interaction.response.send_message("❌ Not in voice channel!", ephemeral=True)
+        
+        if not voice_client.is_paused():
+            return await interaction.response.send_message("❌ Nothing paused!", ephemeral=True)
+        
+        voice_client.resume()
+        embed = create_embed("▶️ Resumed", "Music resumed!", discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+
     @bot.tree.command(name="shuffle", description="Shuffle the music queue.")
     async def shuffle_command(interaction: discord.Interaction):
         guild_key = str(interaction.guild_id)
@@ -564,6 +658,52 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             logger.error(f"Error shuffling queue: {e}")
             embed = create_embed("❌ Shuffle Error", "Couldn't shuffle the queue.", discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @bot.tree.command(name="nowplaying", description="Show currently playing song.")
+    async def nowplaying_command(interaction: discord.Interaction):
+        guild_key = str(interaction.guild_id)
+        voice_client = interaction.guild.voice_client
+        
+        if not voice_client or not voice_client.is_connected():
+            return await interaction.response.send_message("❌ Not in voice channel!", ephemeral=True)
+        
+        if not voice_client.is_playing() and not voice_client.is_paused():
+            return await interaction.response.send_message("❌ Nothing playing!", ephemeral=True)
+        
+        current_song = bot_state.now_playing.get(guild_key, "Unknown")
+        status = "⏸️ Paused" if voice_client.is_paused() else "▶️ Playing"
+        
+        embed = create_embed(f"{status}", f"**{current_song}**", discord.Color.blue())
+        
+        if guild_key in bot_state.music_queues and bot_state.music_queues[guild_key]:
+            embed.add_field(name="Up Next", value=f"{len(bot_state.music_queues[guild_key])} songs in queue", inline=True)
+        
+        await interaction.response.send_message(embed=embed)
+
+    # Voice keepalive task
+    @tasks.loop(minutes=2)
+    async def voice_keepalive():
+        """Periodically check voice connections are healthy."""
+        for guild in bot.guilds:
+            if guild.voice_client and guild.voice_client.is_connected():
+                guild_key = str(guild.id)
+                # If stuck (not playing but has queue), restart
+                if (not guild.voice_client.is_playing() and 
+                    not guild.voice_client.is_paused() and
+                    guild_key in bot_state.music_queues and 
+                    bot_state.music_queues[guild_key]):
+                    
+                    logger.warning(f"Detected stuck player in guild {guild.name}, restarting")
+                    try:
+                        text_channel = guild.system_channel or guild.text_channels[0] if guild.text_channels else None
+                        if text_channel:
+                            await play_next_song(guild.voice_client, guild_key, text_channel)
+                    except Exception as e:
+                        logger.error(f"Failed to restart player: {e}")
+
+    @voice_keepalive.before_loop
+    async def before_voice_keepalive():
+        await bot.wait_until_ready()
 
 # ========== Trivia System ==========
 class TriviaView(View):
