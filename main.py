@@ -5,7 +5,6 @@ import random
 import html
 from typing import Dict, Optional, Any, List, Tuple
 import asyncio
-import datetime
 from threading import Thread
 from collections import deque
 import signal
@@ -14,7 +13,7 @@ from pathlib import Path
 from functools import wraps, lru_cache
 import hmac
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Third-party imports
 import discord
@@ -130,14 +129,14 @@ def home():
         "status": "online",
         "bot_name": "Discord Bot",
         "version": "2.0",
-        "timestamp": datetime.datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat()
     })
 
 @app.route('/health')
 def health_check():
     return jsonify({
         "status": "healthy",
-        "uptime": str(datetime.datetime.utcnow() - start_time) if 'start_time' in globals() else "unknown"
+        "uptime": str(datetime.utcnow() - start_time) if 'start_time' in globals() else "unknown"
     })
 
 @app.errorhandler(404)
@@ -147,7 +146,7 @@ def not_found(error):
 # ========== Bot State ==========
 class BotState:
     def __init__(self):
-        self.start_time = datetime.datetime.utcnow()
+        self.start_time = datetime.utcnow()
         self.http_session: Optional[aiohttp.ClientSession] = None
         # spellchecker removed
         self.music_queues: Dict[str, deque] = {}
@@ -175,11 +174,11 @@ class BotState:
             logger.info("HTTP session closed")
     
     def is_rate_limited(self, user_id: int) -> bool:
-        now = datetime.datetime.utcnow()
+        now = datetime.utcnow()
         if user_id not in self.request_counts:
             self.request_counts[user_id] = []
         
-        cutoff = now - datetime.timedelta(minutes=1)
+        cutoff = now - timedelta(minutes=1)
         self.request_counts[user_id] = [ts for ts in self.request_counts[user_id] if ts > cutoff]
         
         if len(self.request_counts[user_id]) >= Config.MAX_REQUESTS_PER_MINUTE:
@@ -961,11 +960,11 @@ async def fact_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="ping", description="Check bot latency.")
 async def ping_command(interaction: discord.Interaction):
-    start = datetime.datetime.utcnow()
+    start = datetime.utcnow()
     embed = create_embed("🏓 Pong!", "Checking...", discord.Color.yellow())
     await interaction.response.send_message(embed=embed)
     
-    response_time = (datetime.datetime.utcnow() - start).total_seconds() * 1000
+    response_time = (datetime.utcnow() - start).total_seconds() * 1000
     ws_latency = round(bot.latency * 1000)
     
     embed = create_embed("🏓 Pong!", "Connection status:", discord.Color.green())
@@ -973,7 +972,7 @@ async def ping_command(interaction: discord.Interaction):
     embed.add_field(name="Response", value=f"{response_time:.1f}ms", inline=True)
     embed.add_field(name="Status", value="✅ Online", inline=True)
     
-    uptime = datetime.datetime.utcnow() - bot_state.start_time
+    uptime = datetime.utcnow() - bot_state.start_time
     embed.add_field(name="Uptime", value=format_duration(int(uptime.total_seconds())), inline=True)
     embed.add_field(name="Guilds", value=str(len(bot.guilds)), inline=True)
     embed.add_field(name="Users", value=str(len(bot.users)), inline=True)
