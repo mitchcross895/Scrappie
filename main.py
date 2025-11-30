@@ -1031,104 +1031,564 @@ async def trivia_command(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="weather", description="Get weather information.")
-@app_commands.describe(city="City name")
+@app_commands.describe(
+    city="City name (e.g., 'New York' or 'London, UK')",
+    units="Temperature units (default: Fahrenheit)"
+)
+@app_commands.choices(units=[
+    app_commands.Choice(name="Fahrenheit (°F)", value="imperial"),
+    app_commands.Choice(name="Celsius (°C)", value="metric")
+])
 @rate_limit
-async def weather_command(interaction: discord.Interaction, city: str):
+async def weather_command(interaction: discord.Interaction, city: str, units: str = "imperial"):
+    """Enhanced weather command with better error handling and caching."""
     city = city.strip()
+    
+    # Input validation
     if not city or len(city) < Config.MIN_CITY_NAME_LENGTH:
-        embed = create_embed("❌ Invalid Input", "Provide valid city name!", discord.Color.red())
+        embed = create_embed("❌ Invalid Input", "Please provide a valid city name!", discord.Color.red())
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
     if len(city) > Config.MAX_CITY_NAME_LENGTH:
-        embed = create_embed("❌ Too Long", f"Max {Config.MAX_CITY_NAME_LENGTH} chars!", discord.Color.red())
+        embed = create_embed("❌ City Name Too Long", f"Maximum {Config.MAX_CITY_NAME_LENGTH} characters!", discord.Color.red())
         return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    # Sanitize input to prevent injection
+    city = re.sub(r'[<>\'\"\\]', '', city)
     
     await interaction.response.defer()
     
     try:
-        embed = create_embed("🔍 Fetching...", f"Getting weather for **{city}**...", discord.Color.yellow())
+        # Show loading message
+        embed = create_embed("🔍 Fetching Weather...", f"Getting weather data for **{city}**...", discord.Color.yellow())
         await interaction.edit_original_response(embed=embed)
         
-        async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
-            weather = await client.get(city)
-            embed = create_weather_embed(weather, interaction.user)
+        # Convert units parameter to python_weather format
+        unit_type = python_weather.IMPERIAL if units == "imperial" else python_weather.METRIC
+        
+        async with python_weather.Client(unit=unit_type) as client:
+            weather = await asyncio.wait_for(client.get(city), timeout=10.0)
+            
+            # Create and send weather embed
+            embed = create_weather_embed(weather, interaction.user, units)
             await interaction.edit_original_response(embed=embed)
             
+    except asyncio.TimeoutError:
+        logger.error(f"Weather API timeout for city: {city}")
+        embed = create_embed(
+            "⏱️ Request Timeout", 
+            f"The weather service took too long to respond for '{city}'. Please try again.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
     except RequestError as e:
-        logger.error(f"Weather API error: {e}")
-        embed = create_embed("🌐 API Error", f"Error for '{city}'. Check city name.", discord.Color.red())
+        logger.error(f"Weather API request error for '{city}': {e}")
+        embed = create_embed(
+            "🌐 API Error", 
+            f"Couldn't find weather data for '{city}'.\n\n**Suggestions:**\n• Check spelling\n• Try format: 'City, Country' (e.g., 'Paris, France')\n• Use English city names",
+            discord.Color.red()
+        )
         await interaction.edit_original_response(embed=embed)
+        
     except Error as e:
-        logger.error(f"Weather error: {e}")
-        embed = create_embed("❌ Weather Error", f"Couldn't get data for '{city}'.", discord.Color.red())
+        logger.error(f"Weather library error for '{city}': {e}")
+        embed = create_embed(
+            "❌ Weather Service Error", 
+            f"Unable to retrieve weather data for '{city}'. The location may not be recognized.",
+            discord.Color.red()
+        )
         await interaction.edit_original_response(embed=embed)
+        
     except Exception as e:
-        logger.error(f"Unexpected weather error: {e}")
-        embed = create_embed("💥 Error", "Something went wrong. Try later.", discord.Color.red())
+        logger.exception(f"Unexpected weather error for '{city}': {e}")
+        embed = create_embed(
+            "💥 Unexpected Error", 
+            "Something went wrong while fetching the weather. Please try again later.",
+            discord.Color.red()
+        )
         await interaction.edit_original_response(embed=embed)
 
-def create_weather_embed(weather, user: discord.User) -> discord.Embed:
-    weather_emoji = getattr(weather.kind, 'emoji', '🌤️')
-    date_str = weather.datetime.strftime('%A, %B %d, %Y')
+
+def create_weather_embed(weather, user: discord.User, units: str = "imperial") -> discord.Embed:
+    """
+    Create an enhanced weather embed with improved formatting and data display.
     
-    title = f"{weather_emoji} Weather in {weather.location}"
-    description = f"**{weather.description}** • **{weather.temperature}°F**\n{date_str}"
+    Args:
+        weather: Weather data object from python_weather
+        user: Discord user who requested the weather
+        units: Unit system ('imperial' or 'metric')
     
-    temp = weather.temperature
-    color = discord.Color.red() if temp >= 80 else discord.Color.orange() if temp >= 60 else discord.Color.blue() if temp >= 40 else discord.Color.dark_blue()
+    Returns:
+        discord.Embed: Formatted weather embed
+    """
+    # Get temperature unit symbol
+    temp_unit = "°F" if units == "imperial" else "°C"
+    wind_unit = "mph" if units == "imperial" else "km/h"
+    precip_unit = "in" if units == "imperial" else "mm"
+    pressure_unit = "inHg" if units == "imperial" else "mb"
+    visibility_unit = "mi" if units == "imperial" else "km"
+    
+    # Weather emoji with fallback
+    weather_emoji = getattr(weather.kind, 'emoji', '🌤️') if hasattr(weather, 'kind') else '🌤️'
+    
+    # Format date
+    date_str = weather.datetime.strftime('%A, %B %d, %Y at %I:%M %p') if hasattr(weather, 'datetime') else "Unknown Date"
+    
+    # Create title and description
+    location_name = getattr(weather, 'location', 'Unknown Location')
+    description_text = getattr(weather, 'description', 'No description available')
+    temperature = getattr(weather, 'temperature', 'N/A')
+    
+    title = f"{weather_emoji} Weather in {location_name}"
+    description = f"**{description_text}** • **{temperature}{temp_unit}**\n📅 {date_str}"
+    
+    # Determine embed color based on temperature
+    try:
+        temp_value = float(temperature) if isinstance(temperature, (int, float, str)) else 0
+        if units == "imperial":
+            color = (discord.Color.red() if temp_value >= 80 else 
+                    discord.Color.orange() if temp_value >= 60 else 
+                    discord.Color.blue() if temp_value >= 40 else 
+                    discord.Color.dark_blue())
+        else:  # Celsius
+            color = (discord.Color.red() if temp_value >= 27 else 
+                    discord.Color.orange() if temp_value >= 15 else 
+                    discord.Color.blue() if temp_value >= 4 else 
+                    discord.Color.dark_blue())
+    except (ValueError, TypeError):
+        color = discord.Color.blue()
     
     embed = create_embed(title, description, color)
     
-    if weather.region and weather.country:
-        embed.add_field(name="📍 Location", value=f"{weather.region}, {weather.country}", inline=False)
+    # Add location details with better formatting
+    if hasattr(weather, 'region') and hasattr(weather, 'country'):
+        if weather.region and weather.country:
+            location_parts = [weather.region, weather.country]
+            embed.add_field(
+                name="📍 Location", 
+                value=" • ".join(location_parts), 
+                inline=False
+            )
     
-    embed.add_field(name="🌡️ Temperature", value=f"{weather.temperature}°F", inline=True)
-    embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}°F", inline=True)
-    embed.add_field(name="💧 Humidity", value=f"{weather.humidity}%", inline=True)
+    # Temperature information
+    embed.add_field(name="🌡️ Temperature", value=f"{temperature}{temp_unit}", inline=True)
     
-    wind_info = f"{weather.wind_speed} mph"
-    if weather.wind_direction:
-        direction = str(weather.wind_direction)
-        if hasattr(weather.wind_direction, "emoji"):
-            direction += f" {weather.wind_direction.emoji}"
-        wind_info += f" {direction}"
-    embed.add_field(name="💨 Wind", value=wind_info, inline=True)
+    if hasattr(weather, 'feels_like') and weather.feels_like:
+        embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}{temp_unit}", inline=True)
     
-    embed.add_field(name="🌧️ Precipitation", value=f"{weather.precipitation} in", inline=True)
-    embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} inHg", inline=True)
+    if hasattr(weather, 'humidity') and weather.humidity is not None:
+        humidity_emoji = "💧" if weather.humidity > 70 else "💦"
+        embed.add_field(name=f"{humidity_emoji} Humidity", value=f"{weather.humidity}%", inline=True)
     
-    if weather.visibility:
-        embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} mi", inline=True)
+    # Wind information with enhanced formatting
+    if hasattr(weather, 'wind_speed') and weather.wind_speed is not None:
+        wind_info = f"{weather.wind_speed} {wind_unit}"
+        
+        if hasattr(weather, 'wind_direction') and weather.wind_direction:
+            direction = str(weather.wind_direction)
+            if hasattr(weather.wind_direction, "emoji"):
+                direction = f"{weather.wind_direction.emoji} {direction}"
+            wind_info += f"\n{direction}"
+        
+        # Add wind condition description
+        try:
+            wind_speed_val = float(weather.wind_speed)
+            if units == "imperial":
+                wind_desc = ("Calm" if wind_speed_val < 5 else 
+                           "Light" if wind_speed_val < 15 else 
+                           "Moderate" if wind_speed_val < 25 else "Strong")
+            else:  # km/h
+                wind_desc = ("Calm" if wind_speed_val < 8 else 
+                           "Light" if wind_speed_val < 24 else 
+                           "Moderate" if wind_speed_val < 40 else "Strong")
+            wind_info += f"\n({wind_desc})"
+        except (ValueError, TypeError):
+            pass
+        
+        embed.add_field(name="💨 Wind", value=wind_info, inline=True)
     
-    if weather.ultraviolet:
+    # Precipitation
+    if hasattr(weather, 'precipitation') and weather.precipitation is not None:
+        precip_value = weather.precipitation
+        precip_emoji = "🌧️" if precip_value > 0 else "☀️"
+        embed.add_field(name=f"{precip_emoji} Precipitation", value=f"{precip_value} {precip_unit}", inline=True)
+    
+    # Atmospheric pressure
+    if hasattr(weather, 'pressure') and weather.pressure is not None:
+        embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} {pressure_unit}", inline=True)
+    
+    # Visibility
+    if hasattr(weather, 'visibility') and weather.visibility:
+        try:
+            vis_value = float(weather.visibility)
+            vis_emoji = "👁️" if vis_value >= 6 else "🌫️"
+            vis_condition = " (Excellent)" if vis_value >= 10 else " (Good)" if vis_value >= 6 else " (Poor)"
+            embed.add_field(
+                name=f"{vis_emoji} Visibility", 
+                value=f"{weather.visibility} {visibility_unit}{vis_condition}", 
+                inline=True
+            )
+        except (ValueError, TypeError):
+            embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} {visibility_unit}", inline=True)
+    
+    # UV Index with warnings
+    if hasattr(weather, 'ultraviolet') and weather.ultraviolet:
         uv_text = str(weather.ultraviolet)
+        
         if hasattr(weather.ultraviolet, "index"):
             uv_index = weather.ultraviolet.index
-            uv_text = f"{uv_index}/10" + (" ⚠️" if uv_index >= 8 else " 🟡" if uv_index >= 6 else "")
+            
+            # Enhanced UV index display with warnings
+            if uv_index >= 11:
+                uv_display = f"{uv_index}/10+ 🟣 Extreme"
+            elif uv_index >= 8:
+                uv_display = f"{uv_index}/10 🔴 Very High"
+            elif uv_index >= 6:
+                uv_display = f"{uv_index}/10 🟠 High"
+            elif uv_index >= 3:
+                uv_display = f"{uv_index}/10 🟡 Moderate"
+            else:
+                uv_display = f"{uv_index}/10 🟢 Low"
+            
+            uv_text = uv_display
+        
         embed.add_field(name="☀️ UV Index", value=uv_text, inline=True)
     
-    if weather.daily_forecasts:
+    # Enhanced forecast section
+    if hasattr(weather, 'daily_forecasts') and weather.daily_forecasts:
         forecast_text = ""
-        for i, day in enumerate(weather.daily_forecasts[:4]):
-            day_name = "Today" if i == 0 else "Tomorrow" if i == 1 else day.date.strftime('%A') if hasattr(day, 'date') else f"Day {i+1}"
+        
+        for i, day in enumerate(weather.daily_forecasts[:5]):  # Show up to 5 days
+            # Day name
+            if i == 0:
+                day_name = "Today"
+            elif i == 1:
+                day_name = "Tomorrow"
+            else:
+                day_name = day.date.strftime('%A') if hasattr(day, 'date') else f"Day {i+1}"
+            
+            # Weather emoji
             emoji = getattr(getattr(day, 'kind', None), 'emoji', '🌤️')
             
-            desc = day.description if hasattr(day, 'description') else str(day.kind) if hasattr(day, 'kind') else ""
+            # Description
+            desc = ""
+            if hasattr(day, 'description'):
+                desc = day.description
+            elif hasattr(day, 'kind'):
+                desc = str(day.kind)
             
+            # Temperature info with better formatting
             temp_high = getattr(day, 'highest', None) or getattr(day, 'high', None) or getattr(day, 'temperature', None)
             temp_low = getattr(day, 'lowest', None) or getattr(day, 'low', None)
             
-            temp_info = f"H: {temp_high}°F, L: {temp_low}°F" if temp_high and temp_low else f"{temp_high}°F" if temp_high else ""
+            if temp_high and temp_low:
+                temp_info = f"**H:** {temp_high}{temp_unit} **L:** {temp_low}{temp_unit}"
+            elif temp_high:
+                temp_info = f"**{temp_high}{temp_unit}**"
+            else:
+                temp_info = ""
             
-            forecast_text += f"{emoji} **{day_name}**: {desc}"
+            # Build forecast line
+            forecast_line = f"{emoji} **{day_name}**"
+            if desc:
+                forecast_line += f": {desc}"
             if temp_info:
-                forecast_text += f" • {temp_info}"
-            forecast_text += "\n"
+                forecast_line += f"\n{temp_info}"
+            
+            forecast_text += forecast_line + "\n"
         
         if forecast_text:
-            embed.add_field(name="📅 Forecast", value=forecast_text, inline=False)
+            embed.add_field(name="📅 5-Day Forecast", value=forecast_text.strip(), inline=False)
     
-    embed.set_footer(text=f"Requested by {user.display_name} • {weather.datetime.strftime('%I:%M %p')}", icon_url=user.display_avatar.url)
+    # Footer with timestamp and user info
+    timestamp = weather.datetime.strftime('%I:%M %p') if hasattr(weather, 'datetime') else "Unknown Time"
+    embed.set_footer(
+        text=f"Requested by {user.display_name} • Updated: {timestamp}",
+        icon_url=user.display_avatar.url
+    )
+    
+    # Add thumbnail (optional - could use a weather icon if available)
+    # embed.set_thumbnail(url="weather_icon_url_here")
+    
+    return embed@bot.tree.command(name="weather", description="Get weather information.")
+@app_commands.describe(
+    city="City name (e.g., 'New York' or 'London, UK')",
+    units="Temperature units (default: Fahrenheit)"
+)
+@app_commands.choices(units=[
+    app_commands.Choice(name="Fahrenheit (°F)", value="imperial"),
+    app_commands.Choice(name="Celsius (°C)", value="metric")
+])
+@rate_limit
+async def weather_command(interaction: discord.Interaction, city: str, units: str = "imperial"):
+    """Enhanced weather command with better error handling and caching."""
+    city = city.strip()
+    
+    # Input validation
+    if not city or len(city) < Config.MIN_CITY_NAME_LENGTH:
+        embed = create_embed("❌ Invalid Input", "Please provide a valid city name!", discord.Color.red())
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    if len(city) > Config.MAX_CITY_NAME_LENGTH:
+        embed = create_embed("❌ City Name Too Long", f"Maximum {Config.MAX_CITY_NAME_LENGTH} characters!", discord.Color.red())
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    # Sanitize input to prevent injection
+    city = re.sub(r'[<>\'\"\\]', '', city)
+    
+    await interaction.response.defer()
+    
+    try:
+        # Show loading message
+        embed = create_embed("🔍 Fetching Weather...", f"Getting weather data for **{city}**...", discord.Color.yellow())
+        await interaction.edit_original_response(embed=embed)
+        
+        # Convert units parameter to python_weather format
+        unit_type = python_weather.IMPERIAL if units == "imperial" else python_weather.METRIC
+        
+        async with python_weather.Client(unit=unit_type) as client:
+            weather = await asyncio.wait_for(client.get(city), timeout=10.0)
+            
+            # Create and send weather embed
+            embed = create_weather_embed(weather, interaction.user, units)
+            await interaction.edit_original_response(embed=embed)
+            
+    except asyncio.TimeoutError:
+        logger.error(f"Weather API timeout for city: {city}")
+        embed = create_embed(
+            "⏱️ Request Timeout", 
+            f"The weather service took too long to respond for '{city}'. Please try again.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
+    except RequestError as e:
+        logger.error(f"Weather API request error for '{city}': {e}")
+        embed = create_embed(
+            "🌐 API Error", 
+            f"Couldn't find weather data for '{city}'.\n\n**Suggestions:**\n• Check spelling\n• Try format: 'City, Country' (e.g., 'Paris, France')\n• Use English city names",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
+    except Error as e:
+        logger.error(f"Weather library error for '{city}': {e}")
+        embed = create_embed(
+            "❌ Weather Service Error", 
+            f"Unable to retrieve weather data for '{city}'. The location may not be recognized.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
+    except Exception as e:
+        logger.exception(f"Unexpected weather error for '{city}': {e}")
+        embed = create_embed(
+            "💥 Unexpected Error", 
+            "Something went wrong while fetching the weather. Please try again later.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+
+
+def create_weather_embed(weather, user: discord.User, units: str = "imperial") -> discord.Embed:
+    """
+    Create an enhanced weather embed with improved formatting and data display.
+    
+    Args:
+        weather: Weather data object from python_weather
+        user: Discord user who requested the weather
+        units: Unit system ('imperial' or 'metric')
+    
+    Returns:
+        discord.Embed: Formatted weather embed
+    """
+    # Get temperature unit symbol
+    temp_unit = "°F" if units == "imperial" else "°C"
+    wind_unit = "mph" if units == "imperial" else "km/h"
+    precip_unit = "in" if units == "imperial" else "mm"
+    pressure_unit = "inHg" if units == "imperial" else "mb"
+    visibility_unit = "mi" if units == "imperial" else "km"
+    
+    # Weather emoji with fallback
+    weather_emoji = getattr(weather.kind, 'emoji', '🌤️') if hasattr(weather, 'kind') else '🌤️'
+    
+    # Format date
+    date_str = weather.datetime.strftime('%A, %B %d, %Y at %I:%M %p') if hasattr(weather, 'datetime') else "Unknown Date"
+    
+    # Create title and description
+    location_name = getattr(weather, 'location', 'Unknown Location')
+    description_text = getattr(weather, 'description', 'No description available')
+    temperature = getattr(weather, 'temperature', 'N/A')
+    
+    title = f"{weather_emoji} Weather in {location_name}"
+    description = f"**{description_text}** • **{temperature}{temp_unit}**\n📅 {date_str}"
+    
+    # Determine embed color based on temperature
+    try:
+        temp_value = float(temperature) if isinstance(temperature, (int, float, str)) else 0
+        if units == "imperial":
+            color = (discord.Color.red() if temp_value >= 80 else 
+                    discord.Color.orange() if temp_value >= 60 else 
+                    discord.Color.blue() if temp_value >= 40 else 
+                    discord.Color.dark_blue())
+        else:  # Celsius
+            color = (discord.Color.red() if temp_value >= 27 else 
+                    discord.Color.orange() if temp_value >= 15 else 
+                    discord.Color.blue() if temp_value >= 4 else 
+                    discord.Color.dark_blue())
+    except (ValueError, TypeError):
+        color = discord.Color.blue()
+    
+    embed = create_embed(title, description, color)
+    
+    # Add location details with better formatting
+    if hasattr(weather, 'region') and hasattr(weather, 'country'):
+        if weather.region and weather.country:
+            location_parts = [weather.region, weather.country]
+            embed.add_field(
+                name="📍 Location", 
+                value=" • ".join(location_parts), 
+                inline=False
+            )
+    
+    # Temperature information
+    embed.add_field(name="🌡️ Temperature", value=f"{temperature}{temp_unit}", inline=True)
+    
+    if hasattr(weather, 'feels_like') and weather.feels_like:
+        embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}{temp_unit}", inline=True)
+    
+    if hasattr(weather, 'humidity') and weather.humidity is not None:
+        humidity_emoji = "💧" if weather.humidity > 70 else "💦"
+        embed.add_field(name=f"{humidity_emoji} Humidity", value=f"{weather.humidity}%", inline=True)
+    
+    # Wind information with enhanced formatting
+    if hasattr(weather, 'wind_speed') and weather.wind_speed is not None:
+        wind_info = f"{weather.wind_speed} {wind_unit}"
+        
+        if hasattr(weather, 'wind_direction') and weather.wind_direction:
+            direction = str(weather.wind_direction)
+            if hasattr(weather.wind_direction, "emoji"):
+                direction = f"{weather.wind_direction.emoji} {direction}"
+            wind_info += f"\n{direction}"
+        
+        # Add wind condition description
+        try:
+            wind_speed_val = float(weather.wind_speed)
+            if units == "imperial":
+                wind_desc = ("Calm" if wind_speed_val < 5 else 
+                           "Light" if wind_speed_val < 15 else 
+                           "Moderate" if wind_speed_val < 25 else "Strong")
+            else:  # km/h
+                wind_desc = ("Calm" if wind_speed_val < 8 else 
+                           "Light" if wind_speed_val < 24 else 
+                           "Moderate" if wind_speed_val < 40 else "Strong")
+            wind_info += f"\n({wind_desc})"
+        except (ValueError, TypeError):
+            pass
+        
+        embed.add_field(name="💨 Wind", value=wind_info, inline=True)
+    
+    # Precipitation
+    if hasattr(weather, 'precipitation') and weather.precipitation is not None:
+        precip_value = weather.precipitation
+        precip_emoji = "🌧️" if precip_value > 0 else "☀️"
+        embed.add_field(name=f"{precip_emoji} Precipitation", value=f"{precip_value} {precip_unit}", inline=True)
+    
+    # Atmospheric pressure
+    if hasattr(weather, 'pressure') and weather.pressure is not None:
+        embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} {pressure_unit}", inline=True)
+    
+    # Visibility
+    if hasattr(weather, 'visibility') and weather.visibility:
+        try:
+            vis_value = float(weather.visibility)
+            vis_emoji = "👁️" if vis_value >= 6 else "🌫️"
+            vis_condition = " (Excellent)" if vis_value >= 10 else " (Good)" if vis_value >= 6 else " (Poor)"
+            embed.add_field(
+                name=f"{vis_emoji} Visibility", 
+                value=f"{weather.visibility} {visibility_unit}{vis_condition}", 
+                inline=True
+            )
+        except (ValueError, TypeError):
+            embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} {visibility_unit}", inline=True)
+    
+    # UV Index with warnings
+    if hasattr(weather, 'ultraviolet') and weather.ultraviolet:
+        uv_text = str(weather.ultraviolet)
+        
+        if hasattr(weather.ultraviolet, "index"):
+            uv_index = weather.ultraviolet.index
+            
+            # Enhanced UV index display with warnings
+            if uv_index >= 11:
+                uv_display = f"{uv_index}/10+ 🟣 Extreme"
+            elif uv_index >= 8:
+                uv_display = f"{uv_index}/10 🔴 Very High"
+            elif uv_index >= 6:
+                uv_display = f"{uv_index}/10 🟠 High"
+            elif uv_index >= 3:
+                uv_display = f"{uv_index}/10 🟡 Moderate"
+            else:
+                uv_display = f"{uv_index}/10 🟢 Low"
+            
+            uv_text = uv_display
+        
+        embed.add_field(name="☀️ UV Index", value=uv_text, inline=True)
+    
+    # Enhanced forecast section
+    if hasattr(weather, 'daily_forecasts') and weather.daily_forecasts:
+        forecast_text = ""
+        
+        for i, day in enumerate(weather.daily_forecasts[:5]):  # Show up to 5 days
+            # Day name
+            if i == 0:
+                day_name = "Today"
+            elif i == 1:
+                day_name = "Tomorrow"
+            else:
+                day_name = day.date.strftime('%A') if hasattr(day, 'date') else f"Day {i+1}"
+            
+            # Weather emoji
+            emoji = getattr(getattr(day, 'kind', None), 'emoji', '🌤️')
+            
+            # Description
+            desc = ""
+            if hasattr(day, 'description'):
+                desc = day.description
+            elif hasattr(day, 'kind'):
+                desc = str(day.kind)
+            
+            # Temperature info with better formatting
+            temp_high = getattr(day, 'highest', None) or getattr(day, 'high', None) or getattr(day, 'temperature', None)
+            temp_low = getattr(day, 'lowest', None) or getattr(day, 'low', None)
+            
+            if temp_high and temp_low:
+                temp_info = f"**H:** {temp_high}{temp_unit} **L:** {temp_low}{temp_unit}"
+            elif temp_high:
+                temp_info = f"**{temp_high}{temp_unit}**"
+            else:
+                temp_info = ""
+            
+            # Build forecast line
+            forecast_line = f"{emoji} **{day_name}**"
+            if desc:
+                forecast_line += f": {desc}"
+            if temp_info:
+                forecast_line += f"\n{temp_info}"
+            
+            forecast_text += forecast_line + "\n"
+        
+        if forecast_text:
+            embed.add_field(name="📅 5-Day Forecast", value=forecast_text.strip(), inline=False)
+    
+    # Footer with timestamp and user info
+    timestamp = weather.datetime.strftime('%I:%M %p') if hasattr(weather, 'datetime') else "Unknown Time"
+    embed.set_footer(
+        text=f"Requested by {user.display_name} • Updated: {timestamp}",
+        icon_url=user.display_avatar.url
+    )
+
     return embed
 
 # ========== Bot Events ==========
