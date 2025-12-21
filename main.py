@@ -6,6 +6,7 @@ import html
 from typing import Dict, Optional, Any, List, Tuple
 import asyncio
 import datetime
+from datetime import timezone
 from threading import Thread
 from collections import deque
 import signal
@@ -71,19 +72,8 @@ class Config:
     ADDED_WORDS_FILE = "addedwords.txt"
     LOG_FILE = "bot.log"
     MAX_REQUESTS_PER_MINUTE = 30
-
-MISSPELL_REPLIES = [
-    "Let's try that again, shall we?",
-    "Great spelling, numb-nuts!",
-    "Learn to spell, Sandwich.",
-    "Learn English, Torta.",
-    "Read a book, Schmuck!",
-    "Seems like your dictionary took a vacation, pal!",
-    "Even your keyboard is questioning your grammar, genius.",
-    "Autocorrect just waved the white flag, rookie.",
-    "Are you inventing a new language? Because that's something else!",
-    "Spell check is tapping out—maybe it's time for a lesson!"
-]
+    RATE_LIMIT_CLEANUP_THRESHOLD = 10000  # Clean when this many users tracked
+    QUEUE_CLEANUP_HOURS = 1  # How often to clean inactive queues
 
 # ========== Logging Setup ==========
 def setup_logging():
@@ -126,14 +116,14 @@ def home():
         "status": "online",
         "bot_name": "Discord Bot",
         "version": "2.0",
-        "timestamp": datetime.datetime.utcnow().isoformat()
+        "timestamp": datetime.datetime.now(timezone.utc).isoformat()
     })
 
 @app.route('/health')
 def health_check():
     return jsonify({
         "status": "healthy",
-        "uptime": str(datetime.datetime.utcnow() - start_time) if 'start_time' in globals() else "unknown"
+        "uptime": str(datetime.datetime.now(timezone.utc) - start_time) if 'start_time' in globals() else "unknown"
     })
 
 @app.errorhandler(404)
@@ -143,26 +133,24 @@ def not_found(error):
 # ========== Bot State ==========
 class BotState:
     def __init__(self):
-        self.start_time = datetime.datetime.utcnow()
+        self.start_time = datetime.datetime.now(timezone.utc)
         self.http_session: Optional[aiohttp.ClientSession] = None
-        # spellchecker removed
         self.music_queues: Dict[str, deque] = {}
         self.request_counts: Dict[int, List] = {}
         self.now_playing: Dict[str, Optional[str]] = {}
-        self._session_lock = asyncio.Lock()
+        self.shutdown_event = asyncio.Event()
         
     async def initialize(self):
         await self.get_http_session()
     
     async def get_http_session(self) -> aiohttp.ClientSession:
+        """FIX: Simplified session management without unnecessary locking"""
         if self.http_session is None or self.http_session.closed:
-            async with self._session_lock:
-                if self.http_session is None or self.http_session.closed:
-                    timeout = aiohttp.ClientTimeout(total=Config.REQUEST_TIMEOUT)
-                    self.http_session = aiohttp.ClientSession(
-                        timeout=timeout,
-                        headers={'User-Agent': Config.USER_AGENT}
-                    )
+            timeout = aiohttp.ClientTimeout(total=Config.REQUEST_TIMEOUT)
+            self.http_session = aiohttp.ClientSession(
+                timeout=timeout,
+                headers={'User-Agent': Config.USER_AGENT}
+            )
         return self.http_session
     
     async def cleanup(self):
@@ -171,7 +159,20 @@ class BotState:
             logger.info("HTTP session closed")
     
     def is_rate_limited(self, user_id: int) -> bool:
-        now = datetime.datetime.utcnow()
+        """FIX: Added memory leak protection with periodic cleanup"""
+        now = datetime.datetime.now(timezone.utc)
+        
+        # Memory leak fix: Clean up old entries when threshold reached
+        if len(self.request_counts) > Config.RATE_LIMIT_CLEANUP_THRESHOLD:
+            logger.info(f"Cleaning up rate limit tracking (current size: {len(self.request_counts)})")
+            cutoff = now - datetime.timedelta(hours=1)
+            self.request_counts = {
+                uid: [ts for ts in timestamps if ts > cutoff]
+                for uid, timestamps in self.request_counts.items()
+                if any(ts > cutoff for ts in timestamps)
+            }
+            logger.info(f"Rate limit cleanup complete (new size: {len(self.request_counts)})")
+        
         if user_id not in self.request_counts:
             self.request_counts[user_id] = []
         
@@ -565,6 +566,22 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             embed = create_embed("❌ Shuffle Error", "Couldn't shuffle the queue.", discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # FIX: Added periodic cleanup task for inactive music queues
+    @tasks.loop(hours=Config.QUEUE_CLEANUP_HOURS)
+    async def cleanup_inactive_queues():
+        """Memory leak fix: Clean up queues for guilds bot is no longer in"""
+        logger.info("Running music queue cleanup...")
+        cleaned = 0
+        for guild_id in list(bot_state.music_queues.keys()):
+            guild = bot.get_guild(int(guild_id))
+            if not guild or not guild.voice_client:
+                bot_state.music_queues.pop(guild_id, None)
+                bot_state.now_playing.pop(guild_id, None)
+                cleaned += 1
+        
+        if cleaned > 0:
+            logger.info(f"Cleaned up {cleaned} inactive music queues")
+
 # ========== Trivia System ==========
 class TriviaView(View):
     def __init__(self, user_id: int, question_data: dict):
@@ -817,11 +834,11 @@ async def fact_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="ping", description="Check bot latency.")
 async def ping_command(interaction: discord.Interaction):
-    start = datetime.datetime.utcnow()
+    start = datetime.datetime.now(timezone.utc)
     embed = create_embed("🏓 Pong!", "Checking...", discord.Color.yellow())
     await interaction.response.send_message(embed=embed)
     
-    response_time = (datetime.datetime.utcnow() - start).total_seconds() * 1000
+    response_time = (datetime.datetime.now(timezone.utc) - start).total_seconds() * 1000
     ws_latency = round(bot.latency * 1000)
     
     embed = create_embed("🏓 Pong!", "Connection status:", discord.Color.green())
@@ -829,7 +846,7 @@ async def ping_command(interaction: discord.Interaction):
     embed.add_field(name="Response", value=f"{response_time:.1f}ms", inline=True)
     embed.add_field(name="Status", value="✅ Online", inline=True)
     
-    uptime = datetime.datetime.utcnow() - bot_state.start_time
+    uptime = datetime.datetime.now(timezone.utc) - bot_state.start_time
     embed.add_field(name="Uptime", value=format_duration(int(uptime.total_seconds())), inline=True)
     embed.add_field(name="Guilds", value=str(len(bot.guilds)), inline=True)
     embed.add_field(name="Users", value=str(len(bot.users)), inline=True)
@@ -1007,6 +1024,10 @@ async def on_ready():
     
     if not status_update_task.is_running():
         status_update_task.start()
+    
+    # Start cleanup tasks if music is available
+    if YT_DLP_AVAILABLE and VOICE_AVAILABLE and not cleanup_inactive_queues.is_running():
+        cleanup_inactive_queues.start()
 
 @bot.event
 async def on_guild_join(guild):
@@ -1073,34 +1094,77 @@ async def status_update_task():
 
 # ========== Cleanup ==========
 async def cleanup_resources():
-    logger.info("🧹 Cleaning up...")
+    """FIX: Improved cleanup with proper task cancellation"""
+    logger.info("🧹 Cleaning up resources...")
+    
+    # Stop background tasks
+    if status_update_task.is_running():
+        status_update_task.cancel()
+    
+    if YT_DLP_AVAILABLE and VOICE_AVAILABLE and cleanup_inactive_queues.is_running():
+        cleanup_inactive_queues.cancel()
+    
+    # Close HTTP session
     await bot_state.cleanup()
     
+    # Disconnect from all voice channels
     if VOICE_AVAILABLE:
         for guild in bot.guilds:
             if guild.voice_client:
-                await guild.voice_client.disconnect()
+                try:
+                    await guild.voice_client.disconnect()
+                except Exception as e:
+                    logger.error(f"Error disconnecting from {guild.name}: {e}")
     
+    # Clear all queues
     bot_state.music_queues.clear()
-    logger.info("✅ Cleanup done")
+    bot_state.request_counts.clear()
+    bot_state.now_playing.clear()
+    
+    logger.info("✅ Cleanup complete")
 
-def signal_handler(signum, frame):
-    logger.info(f"📥 Signal {signum}, shutting down...")
-    asyncio.create_task(cleanup_resources())
-    sys.exit(0)
+# FIX: Proper signal handler that works with asyncio
+def setup_signal_handlers(loop):
+    """Setup signal handlers that properly work with asyncio"""
+    def handle_signal(signum):
+        logger.info(f"📥 Received signal {signum}, initiating shutdown...")
+        # Set the shutdown event
+        bot_state.shutdown_event.set()
+        # Schedule the cleanup
+        asyncio.create_task(graceful_shutdown())
+    
+    if sys.platform != 'win32':
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: handle_signal(s))
+    else:
+        # Windows doesn't support add_signal_handler
+        signal.signal(signal.SIGINT, lambda s, f: handle_signal(s))
+        signal.signal(signal.SIGTERM, lambda s, f: handle_signal(s))
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
-@bot.event
-async def on_disconnect():
-    logger.info("🔌 Bot disconnected")
-    await cleanup_resources()
+async def graceful_shutdown():
+    """Perform graceful shutdown of the bot"""
+    logger.info("🛑 Starting graceful shutdown...")
+    try:
+        await cleanup_resources()
+        await bot.close()
+        logger.info("👋 Bot shutdown complete")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
+    finally:
+        # Force exit if we're still running
+        sys.exit(0)
 
 # ========== Startup ==========
 def start_discord_bot():
+    """FIX: Better bot startup with proper signal handling"""
     try:
-        logger.info("🚀 Starting bot...")
+        logger.info("🚀 Starting Discord bot...")
+        
+        # Setup signal handlers before starting
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        setup_signal_handlers(loop)
+        
         is_deployment = os.getenv("DEPLOYMENT") == "true" or "gunicorn" in os.environ.get("SERVER_SOFTWARE", "")
         
         if is_deployment:
@@ -1111,36 +1175,60 @@ def start_discord_bot():
             bot.run(DISCORD_TOKEN)
             
     except discord.LoginFailure:
-        logger.critical("❌ Invalid token!")
+        logger.critical("❌ Invalid Discord token!")
         sys.exit(1)
     except discord.HTTPException as e:
         logger.critical(f"❌ Discord HTTP error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
-        logger.info("⏹️ Shutdown requested")
+        logger.info("⏹️ Keyboard interrupt received")
     except Exception as e:
-        logger.critical(f"💥 Startup failed: {e}", exc_info=True)
+        logger.critical(f"💥 Bot startup failed: {e}", exc_info=True)
         sys.exit(1)
     finally:
         try:
-            asyncio.run(cleanup_resources())
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                loop.run_until_complete(cleanup_resources())
+                loop.close()
         except Exception as e:
-            logger.error(f"Cleanup error: {e}")
+            logger.error(f"Error during final cleanup: {e}")
+
+def start_flask_server():
+    """Start Flask server in a separate function"""
+    port = int(os.getenv("PORT", 5000))
+    logger.info(f"🌐 Starting Flask server on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # ========== Entry Point ==========
-if __name__ != "__main__":
-    Thread(target=start_discord_bot, daemon=False).start()
-
-application = app
-
 if __name__ == "__main__":
-    import atexit
-    atexit.register(lambda: asyncio.run(cleanup_resources()))
+    # FIX: Use multiprocessing instead of threading for proper isolation
+    import multiprocessing
     
-    Thread(
-        target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=False, use_reloader=False),
-        daemon=True
-    ).start()
+    logger.info("🚀 Starting bot with separate processes...")
     
-    logger.info(f"🌐 Flask server on port {os.getenv('PORT', 5000)}")
-    start_discord_bot()
+    # Start Flask in a separate process
+    flask_process = multiprocessing.Process(target=start_flask_server, daemon=True)
+    flask_process.start()
+    
+    # Start Discord bot in main process (so signal handling works properly)
+    try:
+        start_discord_bot()
+    finally:
+        # Cleanup Flask process
+        if flask_process.is_alive():
+            logger.info("Terminating Flask process...")
+            flask_process.terminate()
+            flask_process.join(timeout=5)
+            if flask_process.is_alive():
+                flask_process.kill()
+
+else:
+    # FIX: When imported as a module (e.g., by gunicorn), don't start bot in thread
+    # Instead, provide separate entry points
+    logger.warning("⚠️ Module imported - Discord bot not started")
+    logger.warning("⚠️ Run this file directly with 'python bot.py' to start both services")
+    logger.warning("⚠️ Or deploy Discord bot and Flask separately for production")
+    
+    # Only export Flask app for WSGI servers
+    application = app
