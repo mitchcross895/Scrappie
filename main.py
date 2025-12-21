@@ -5,14 +5,15 @@ import random
 import html
 from typing import Dict, Optional, Any, List, Tuple
 import asyncio
-import datetime
-from datetime import timezone
 from threading import Thread
 from collections import deque
 import signal
 import sys
 from pathlib import Path
 from functools import wraps, lru_cache
+import hmac
+import hashlib
+from datetime import datetime, timedelta
 
 # Third-party imports
 import discord
@@ -20,7 +21,7 @@ import aiohttp
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, Button, Select
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import randfacts
 from dotenv import load_dotenv
 import python_weather
@@ -69,11 +70,23 @@ class Config:
     TRIVIA_CATEGORIES_API = "https://opentdb.com/api_category.php"
     TRIVIA_API = "https://opentdb.com/api.php?amount=1&type=multiple"
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    ADDED_WORDS_FILE = "addedwords.txt"
     LOG_FILE = "bot.log"
     MAX_REQUESTS_PER_MINUTE = 30
-    RATE_LIMIT_CLEANUP_THRESHOLD = 10000  # Clean when this many users tracked
-    QUEUE_CLEANUP_HOURS = 1  # How often to clean inactive queues
+    GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+    GITHUB_CHANNEL_ID = int(os.getenv("GITHUB_CHANNEL_ID", "0"))
+
+MISSPELL_REPLIES = [
+    "Let's try that again, shall we?",
+    "Great spelling, numb-nuts!",
+    "Learn to spell, Sandwich.",
+    "Learn English, Torta.",
+    "Read a book, Schmuck!",
+    "Seems like your dictionary took a vacation, pal!",
+    "Even your keyboard is questioning your grammar, genius.",
+    "Autocorrect just waved the white flag, rookie.",
+    "Are you inventing a new language? Because that's something else!",
+    "Spell check is tapping out—maybe it's time for a lesson!"
+]
 
 # ========== Logging Setup ==========
 def setup_logging():
@@ -116,14 +129,14 @@ def home():
         "status": "online",
         "bot_name": "Discord Bot",
         "version": "2.0",
-        "timestamp": datetime.datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.utcnow().isoformat()
     })
 
 @app.route('/health')
 def health_check():
     return jsonify({
         "status": "healthy",
-        "uptime": str(datetime.datetime.now(timezone.utc) - start_time) if 'start_time' in globals() else "unknown"
+        "uptime": str(datetime.utcnow() - start_time) if 'start_time' in globals() else "unknown"
     })
 
 @app.errorhandler(404)
@@ -133,24 +146,26 @@ def not_found(error):
 # ========== Bot State ==========
 class BotState:
     def __init__(self):
-        self.start_time = datetime.datetime.now(timezone.utc)
+        self.start_time = datetime.utcnow()
         self.http_session: Optional[aiohttp.ClientSession] = None
+        # spellchecker removed
         self.music_queues: Dict[str, deque] = {}
         self.request_counts: Dict[int, List] = {}
         self.now_playing: Dict[str, Optional[str]] = {}
-        self.shutdown_event = asyncio.Event()
+        self._session_lock = asyncio.Lock()
         
     async def initialize(self):
         await self.get_http_session()
     
     async def get_http_session(self) -> aiohttp.ClientSession:
-        """FIX: Simplified session management without unnecessary locking"""
         if self.http_session is None or self.http_session.closed:
-            timeout = aiohttp.ClientTimeout(total=Config.REQUEST_TIMEOUT)
-            self.http_session = aiohttp.ClientSession(
-                timeout=timeout,
-                headers={'User-Agent': Config.USER_AGENT}
-            )
+            async with self._session_lock:
+                if self.http_session is None or self.http_session.closed:
+                    timeout = aiohttp.ClientTimeout(total=Config.REQUEST_TIMEOUT)
+                    self.http_session = aiohttp.ClientSession(
+                        timeout=timeout,
+                        headers={'User-Agent': Config.USER_AGENT}
+                    )
         return self.http_session
     
     async def cleanup(self):
@@ -159,24 +174,11 @@ class BotState:
             logger.info("HTTP session closed")
     
     def is_rate_limited(self, user_id: int) -> bool:
-        """FIX: Added memory leak protection with periodic cleanup"""
-        now = datetime.datetime.now(timezone.utc)
-        
-        # Memory leak fix: Clean up old entries when threshold reached
-        if len(self.request_counts) > Config.RATE_LIMIT_CLEANUP_THRESHOLD:
-            logger.info(f"Cleaning up rate limit tracking (current size: {len(self.request_counts)})")
-            cutoff = now - datetime.timedelta(hours=1)
-            self.request_counts = {
-                uid: [ts for ts in timestamps if ts > cutoff]
-                for uid, timestamps in self.request_counts.items()
-                if any(ts > cutoff for ts in timestamps)
-            }
-            logger.info(f"Rate limit cleanup complete (new size: {len(self.request_counts)})")
-        
+        now = datetime.utcnow()
         if user_id not in self.request_counts:
             self.request_counts[user_id] = []
         
-        cutoff = now - datetime.timedelta(minutes=1)
+        cutoff = now - timedelta(minutes=1)
         self.request_counts[user_id] = [ts for ts in self.request_counts[user_id] if ts > cutoff]
         
         if len(self.request_counts[user_id]) >= Config.MAX_REQUESTS_PER_MINUTE:
@@ -296,8 +298,8 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             
             filename = data['url'] if stream else ytdl.prepare_filename(data)
             ffmpeg_options = {
-                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                'options': '-vn'
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -reconnect_at_eof 1 -multiple_requests 1',
+                'options': '-vn -b:a 128k'
             }
             
             try:
@@ -308,77 +310,128 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             
             return cls(source, data=data)
 
+    async def is_voice_connected(voice_client, guild_id) -> bool:
+        """Check if voice client is still valid and connected."""
+        if not voice_client:
+            return False
+        if not voice_client.is_connected():
+            return False
+        if voice_client.guild.id != guild_id:
+            return False
+        return True
+
     async def play_next_song(voice_client, guild_key, channel):
         try:
-            if not voice_client or not voice_client.is_connected():
+            guild_id = int(guild_key)
+            
+            # Verify connection
+            if not await is_voice_connected(voice_client, guild_id):
+                logger.warning(f"Voice client not connected for guild {guild_key}")
+                if guild_key in bot_state.music_queues:
+                    bot_state.music_queues[guild_key].clear()
+                if guild_key in bot_state.now_playing:
+                    del bot_state.now_playing[guild_key]
                 return
             
+            # Check queue
             if guild_key not in bot_state.music_queues or not bot_state.music_queues[guild_key]:
-                await asyncio.sleep(3)
-                if voice_client and voice_client.is_connected():
+                await asyncio.sleep(5)
+                # Recheck after wait
+                if (voice_client and voice_client.is_connected() and 
+                    (guild_key not in bot_state.music_queues or not bot_state.music_queues[guild_key])):
                     await voice_client.disconnect()
+                    if guild_key in bot_state.now_playing:
+                        del bot_state.now_playing[guild_key]
                     embed = create_embed("👋 Queue Finished", "All songs played. Disconnecting...", discord.Color.blue())
                     await channel.send(embed=embed)
                 return
             
             video_url, title = bot_state.music_queues[guild_key].popleft()
             
-            try:
-                player = await asyncio.wait_for(
-                    YTDLSource.from_url(video_url, loop=bot.loop, stream=True),
-                    timeout=30.0
-                )
-                
-                def after_play(error):
-                    if error:
-                        logger.error(f"Playback error for {title}: {error}")
-                    
-                    if hasattr(player, 'cleanup'):
-                        try:
-                            player.cleanup()
-                        except Exception as e:
-                            logger.error(f"Cleanup error: {e}")
-                    
-                    fut = asyncio.run_coroutine_threadsafe(
-                        _schedule_next_if_connected(voice_client, guild_key, channel),
-                        bot.loop
+            # Attempt to play with retry logic
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    player = await asyncio.wait_for(
+                        YTDLSource.from_url(video_url, loop=bot.loop, stream=True),
+                        timeout=45.0
                     )
-                    try:
-                        fut.result(timeout=5)
-                    except Exception as e:
-                        logger.error(f"Error scheduling next: {e}")
-                
-                if voice_client.is_playing():
-                    voice_client.stop()
-                
-                voice_client.play(player, after=after_play)
-                bot_state.now_playing[guild_key] = title
-                
-                embed = create_embed("🎵 Now Playing", f"**{title}**", discord.Color.blue())
-                if player.duration:
-                    embed.add_field(name="Duration", value=format_duration(int(player.duration)), inline=True)
-                if bot_state.music_queues[guild_key]:
-                    embed.add_field(name="Up Next", value=f"{len(bot_state.music_queues[guild_key])} songs", inline=True)
-                
-                await channel.send(embed=embed)
                     
-            except Exception as e:
-                logger.error(f"Error playing {title}: {e}")
-                embed = create_embed("❌ Playback Error", f"Couldn't play **{title}**. Skipping...", discord.Color.red())
-                await channel.send(embed=embed)
-                await asyncio.sleep(1)
-                if bot_state.music_queues.get(guild_key):
-                    await play_next_song(voice_client, guild_key, channel)
-                
+                    def after_play(error):
+                        if error:
+                            logger.error(f"Playback error for {title}: {error}")
+                        
+                        if hasattr(player, 'cleanup'):
+                            try:
+                                player.cleanup()
+                            except Exception as e:
+                                logger.error(f"Cleanup error: {e}")
+                        
+                        # Schedule next song
+                        fut = asyncio.run_coroutine_threadsafe(
+                            _schedule_next_if_connected(voice_client, guild_key, channel),
+                            bot.loop
+                        )
+                        try:
+                            fut.result(timeout=10)
+                        except Exception as e:
+                            logger.error(f"Error scheduling next: {e}")
+                    
+                    # Stop current playback if any
+                    if voice_client.is_playing():
+                        voice_client.stop()
+                        await asyncio.sleep(0.5)
+                    
+                    # Verify still connected before playing
+                    if not await is_voice_connected(voice_client, guild_id):
+                        logger.warning("Disconnected before play")
+                        return
+                    
+                    voice_client.play(player, after=after_play)
+                    bot_state.now_playing[guild_key] = title
+                    
+                    # Send now playing message
+                    embed = create_embed("🎵 Now Playing", f"**{title}**", discord.Color.blue())
+                    if player.duration:
+                        embed.add_field(name="Duration", value=format_duration(int(player.duration)), inline=True)
+                    if bot_state.music_queues[guild_key]:
+                        embed.add_field(name="Up Next", value=f"{len(bot_state.music_queues[guild_key])} songs", inline=True)
+                    
+                    await channel.send(embed=embed)
+                    break  # Success, exit retry loop
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout loading {title} (attempt {attempt + 1}/{max_retries})")
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"Error on attempt {attempt + 1} for {title}: {e}")
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(2)
+            
         except Exception as e:
-            logger.exception(f"Unexpected error in play_next_song: {e}")
-            if guild_key in bot_state.music_queues:
-                bot_state.music_queues[guild_key].clear()
-            embed = create_embed("💥 Fatal Error", "Music playback failed. Queue cleared.", discord.Color.dark_red())
+            logger.exception(f"Failed to play {title if 'title' in locals() else 'unknown'}: {e}")
+            embed = create_embed("❌ Playback Error", 
+                               f"Couldn't play **{title if 'title' in locals() else 'song'}**. Skipping...", 
+                               discord.Color.red())
             await channel.send(embed=embed)
+            
+            # Try next song if queue not empty
+            await asyncio.sleep(2)
+            if guild_key in bot_state.music_queues and bot_state.music_queues[guild_key]:
+                if voice_client and voice_client.is_connected():
+                    await play_next_song(voice_client, guild_key, channel)
+            elif voice_client and voice_client.is_connected():
+                await voice_client.disconnect()
+                if guild_key in bot_state.now_playing:
+                    del bot_state.now_playing[guild_key]
 
     async def _schedule_next_if_connected(voice_client, guild_key, channel):
-        if voice_client and voice_client.is_connected():
+        guild_id = int(guild_key)
+        if await is_voice_connected(voice_client, guild_id):
             await play_next_song(voice_client, guild_key, channel)
 
     @bot.tree.command(name="play", description="Play a song or add it to queue. Supports playlists!")
@@ -394,9 +447,19 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         voice_client = interaction.guild.voice_client
         
         if voice_client is None:
-            voice_client = await voice_channel.connect()
+            try:
+                voice_client = await voice_channel.connect(timeout=10.0, reconnect=True)
+            except asyncio.TimeoutError:
+                return await interaction.followup.send("❌ Failed to connect to voice channel. Try again.")
+            except Exception as e:
+                logger.error(f"Voice connection error: {e}")
+                return await interaction.followup.send("❌ Couldn't connect to voice channel.")
         elif voice_channel != voice_client.channel:
-            await voice_client.move_to(voice_channel)
+            try:
+                await voice_client.move_to(voice_channel)
+            except Exception as e:
+                logger.error(f"Voice move error: {e}")
+                return await interaction.followup.send("❌ Couldn't move to your voice channel.")
         
         guild_key = str(interaction.guild_id)
         bot_state.music_queues.setdefault(guild_key, deque())
@@ -455,11 +518,11 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             if voice_client.is_playing() or voice_client.is_paused():
                 embed = create_embed("✅ Added to Queue", f"**{title}**", discord.Color.green())
                 embed.add_field(name="Position", value=f"#{len(bot_state.music_queues[guild_key])}", inline=True)
+                await interaction.followup.send(embed=embed)
             else:
                 embed = create_embed("🎵 Starting Playback", f"**{title}**", discord.Color.blue())
+                await interaction.followup.send(embed=embed)
                 await play_next_song(voice_client, guild_key, interaction.channel)
-            
-            await interaction.followup.send(embed=embed)
                         
         except Exception as e:
             logger.error(f"Error in play command: {e}")
@@ -477,6 +540,8 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         guild_key = str(interaction.guild_id)
         if guild_key in bot_state.music_queues:
             bot_state.music_queues[guild_key].clear()
+        if guild_key in bot_state.now_playing:
+            del bot_state.now_playing[guild_key]
         
         embed = create_embed("⏹️ Music Stopped", "Playback stopped and queue cleared.", discord.Color.orange())
         await interaction.response.send_message(embed=embed)
@@ -493,6 +558,8 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         guild_key = str(interaction.guild_id)
         if guild_key in bot_state.music_queues:
             bot_state.music_queues[guild_key].clear()
+        if guild_key in bot_state.now_playing:
+            del bot_state.now_playing[guild_key]
         
         embed = create_embed("👋 Left Voice Channel", f"Disconnected from **{channel_name}**", discord.Color.blue())
         await interaction.response.send_message(embed=embed)
@@ -536,6 +603,35 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
         embed = create_embed("⏭️ Skipped", "Skipped to next song!", discord.Color.blue())
         await interaction.response.send_message(embed=embed)
 
+    @bot.tree.command(name="pause", description="Pause current song.")
+    async def pause_command(interaction: discord.Interaction):
+        voice_client = interaction.guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            return await interaction.response.send_message("❌ Not in voice channel!", ephemeral=True)
+        
+        if voice_client.is_paused():
+            return await interaction.response.send_message("❌ Already paused!", ephemeral=True)
+        
+        if not voice_client.is_playing():
+            return await interaction.response.send_message("❌ Nothing playing!", ephemeral=True)
+        
+        voice_client.pause()
+        embed = create_embed("⏸️ Paused", "Music paused. Use `/resume` to continue.", discord.Color.orange())
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(name="resume", description="Resume paused song.")
+    async def resume_command(interaction: discord.Interaction):
+        voice_client = interaction.guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            return await interaction.response.send_message("❌ Not in voice channel!", ephemeral=True)
+        
+        if not voice_client.is_paused():
+            return await interaction.response.send_message("❌ Nothing paused!", ephemeral=True)
+        
+        voice_client.resume()
+        embed = create_embed("▶️ Resumed", "Music resumed!", discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+
     @bot.tree.command(name="shuffle", description="Shuffle the music queue.")
     async def shuffle_command(interaction: discord.Interaction):
         guild_key = str(interaction.guild_id)
@@ -566,21 +662,51 @@ if YT_DLP_AVAILABLE and VOICE_AVAILABLE:
             embed = create_embed("❌ Shuffle Error", "Couldn't shuffle the queue.", discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # FIX: Added periodic cleanup task for inactive music queues
-    @tasks.loop(hours=Config.QUEUE_CLEANUP_HOURS)
-    async def cleanup_inactive_queues():
-        """Memory leak fix: Clean up queues for guilds bot is no longer in"""
-        logger.info("Running music queue cleanup...")
-        cleaned = 0
-        for guild_id in list(bot_state.music_queues.keys()):
-            guild = bot.get_guild(int(guild_id))
-            if not guild or not guild.voice_client:
-                bot_state.music_queues.pop(guild_id, None)
-                bot_state.now_playing.pop(guild_id, None)
-                cleaned += 1
+    @bot.tree.command(name="nowplaying", description="Show currently playing song.")
+    async def nowplaying_command(interaction: discord.Interaction):
+        guild_key = str(interaction.guild_id)
+        voice_client = interaction.guild.voice_client
         
-        if cleaned > 0:
-            logger.info(f"Cleaned up {cleaned} inactive music queues")
+        if not voice_client or not voice_client.is_connected():
+            return await interaction.response.send_message("❌ Not in voice channel!", ephemeral=True)
+        
+        if not voice_client.is_playing() and not voice_client.is_paused():
+            return await interaction.response.send_message("❌ Nothing playing!", ephemeral=True)
+        
+        current_song = bot_state.now_playing.get(guild_key, "Unknown")
+        status = "⏸️ Paused" if voice_client.is_paused() else "▶️ Playing"
+        
+        embed = create_embed(f"{status}", f"**{current_song}**", discord.Color.blue())
+        
+        if guild_key in bot_state.music_queues and bot_state.music_queues[guild_key]:
+            embed.add_field(name="Up Next", value=f"{len(bot_state.music_queues[guild_key])} songs in queue", inline=True)
+        
+        await interaction.response.send_message(embed=embed)
+
+    # Voice keepalive task
+    @tasks.loop(minutes=2)
+    async def voice_keepalive():
+        """Periodically check voice connections are healthy."""
+        for guild in bot.guilds:
+            if guild.voice_client and guild.voice_client.is_connected():
+                guild_key = str(guild.id)
+                # If stuck (not playing but has queue), restart
+                if (not guild.voice_client.is_playing() and 
+                    not guild.voice_client.is_paused() and
+                    guild_key in bot_state.music_queues and 
+                    bot_state.music_queues[guild_key]):
+                    
+                    logger.warning(f"Detected stuck player in guild {guild.name}, restarting")
+                    try:
+                        text_channel = guild.system_channel or guild.text_channels[0] if guild.text_channels else None
+                        if text_channel:
+                            await play_next_song(guild.voice_client, guild_key, text_channel)
+                    except Exception as e:
+                        logger.error(f"Failed to restart player: {e}")
+
+    @voice_keepalive.before_loop
+    async def before_voice_keepalive():
+        await bot.wait_until_ready()
 
 # ========== Trivia System ==========
 class TriviaView(View):
@@ -834,11 +960,11 @@ async def fact_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="ping", description="Check bot latency.")
 async def ping_command(interaction: discord.Interaction):
-    start = datetime.datetime.now(timezone.utc)
+    start = datetime.utcnow()
     embed = create_embed("🏓 Pong!", "Checking...", discord.Color.yellow())
     await interaction.response.send_message(embed=embed)
     
-    response_time = (datetime.datetime.now(timezone.utc) - start).total_seconds() * 1000
+    response_time = (datetime.utcnow() - start).total_seconds() * 1000
     ws_latency = round(bot.latency * 1000)
     
     embed = create_embed("🏓 Pong!", "Connection status:", discord.Color.green())
@@ -846,7 +972,7 @@ async def ping_command(interaction: discord.Interaction):
     embed.add_field(name="Response", value=f"{response_time:.1f}ms", inline=True)
     embed.add_field(name="Status", value="✅ Online", inline=True)
     
-    uptime = datetime.datetime.now(timezone.utc) - bot_state.start_time
+    uptime = datetime.utcnow() - bot_state.start_time
     embed.add_field(name="Uptime", value=format_duration(int(uptime.total_seconds())), inline=True)
     embed.add_field(name="Guilds", value=str(len(bot.guilds)), inline=True)
     embed.add_field(name="Users", value=str(len(bot.users)), inline=True)
@@ -905,104 +1031,564 @@ async def trivia_command(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="weather", description="Get weather information.")
-@app_commands.describe(city="City name")
+@app_commands.describe(
+    city="City name (e.g., 'New York' or 'London, UK')",
+    units="Temperature units (default: Fahrenheit)"
+)
+@app_commands.choices(units=[
+    app_commands.Choice(name="Fahrenheit (°F)", value="imperial"),
+    app_commands.Choice(name="Celsius (°C)", value="metric")
+])
 @rate_limit
-async def weather_command(interaction: discord.Interaction, city: str):
+async def weather_command(interaction: discord.Interaction, city: str, units: str = "imperial"):
+    """Enhanced weather command with better error handling and caching."""
     city = city.strip()
+    
+    # Input validation
     if not city or len(city) < Config.MIN_CITY_NAME_LENGTH:
-        embed = create_embed("❌ Invalid Input", "Provide valid city name!", discord.Color.red())
+        embed = create_embed("❌ Invalid Input", "Please provide a valid city name!", discord.Color.red())
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
     if len(city) > Config.MAX_CITY_NAME_LENGTH:
-        embed = create_embed("❌ Too Long", f"Max {Config.MAX_CITY_NAME_LENGTH} chars!", discord.Color.red())
+        embed = create_embed("❌ City Name Too Long", f"Maximum {Config.MAX_CITY_NAME_LENGTH} characters!", discord.Color.red())
         return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    # Sanitize input to prevent injection
+    city = re.sub(r'[<>\'\"\\]', '', city)
     
     await interaction.response.defer()
     
     try:
-        embed = create_embed("🔍 Fetching...", f"Getting weather for **{city}**...", discord.Color.yellow())
+        # Show loading message
+        embed = create_embed("🔍 Fetching Weather...", f"Getting weather data for **{city}**...", discord.Color.yellow())
         await interaction.edit_original_response(embed=embed)
         
-        async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
-            weather = await client.get(city)
-            embed = create_weather_embed(weather, interaction.user)
+        # Convert units parameter to python_weather format
+        unit_type = python_weather.IMPERIAL if units == "imperial" else python_weather.METRIC
+        
+        async with python_weather.Client(unit=unit_type) as client:
+            weather = await asyncio.wait_for(client.get(city), timeout=10.0)
+            
+            # Create and send weather embed
+            embed = create_weather_embed(weather, interaction.user, units)
             await interaction.edit_original_response(embed=embed)
             
+    except asyncio.TimeoutError:
+        logger.error(f"Weather API timeout for city: {city}")
+        embed = create_embed(
+            "⏱️ Request Timeout", 
+            f"The weather service took too long to respond for '{city}'. Please try again.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
     except RequestError as e:
-        logger.error(f"Weather API error: {e}")
-        embed = create_embed("🌐 API Error", f"Error for '{city}'. Check city name.", discord.Color.red())
+        logger.error(f"Weather API request error for '{city}': {e}")
+        embed = create_embed(
+            "🌐 API Error", 
+            f"Couldn't find weather data for '{city}'.\n\n**Suggestions:**\n• Check spelling\n• Try format: 'City, Country' (e.g., 'Paris, France')\n• Use English city names",
+            discord.Color.red()
+        )
         await interaction.edit_original_response(embed=embed)
+        
     except Error as e:
-        logger.error(f"Weather error: {e}")
-        embed = create_embed("❌ Weather Error", f"Couldn't get data for '{city}'.", discord.Color.red())
+        logger.error(f"Weather library error for '{city}': {e}")
+        embed = create_embed(
+            "❌ Weather Service Error", 
+            f"Unable to retrieve weather data for '{city}'. The location may not be recognized.",
+            discord.Color.red()
+        )
         await interaction.edit_original_response(embed=embed)
+        
     except Exception as e:
-        logger.error(f"Unexpected weather error: {e}")
-        embed = create_embed("💥 Error", "Something went wrong. Try later.", discord.Color.red())
+        logger.exception(f"Unexpected weather error for '{city}': {e}")
+        embed = create_embed(
+            "💥 Unexpected Error", 
+            "Something went wrong while fetching the weather. Please try again later.",
+            discord.Color.red()
+        )
         await interaction.edit_original_response(embed=embed)
 
-def create_weather_embed(weather, user: discord.User) -> discord.Embed:
-    weather_emoji = getattr(weather.kind, 'emoji', '🌤️')
-    date_str = weather.datetime.strftime('%A, %B %d, %Y')
+
+def create_weather_embed(weather, user: discord.User, units: str = "imperial") -> discord.Embed:
+    """
+    Create an enhanced weather embed with improved formatting and data display.
     
-    title = f"{weather_emoji} Weather in {weather.location}"
-    description = f"**{weather.description}** • **{weather.temperature}°F**\n{date_str}"
+    Args:
+        weather: Weather data object from python_weather
+        user: Discord user who requested the weather
+        units: Unit system ('imperial' or 'metric')
     
-    temp = weather.temperature
-    color = discord.Color.red() if temp >= 80 else discord.Color.orange() if temp >= 60 else discord.Color.blue() if temp >= 40 else discord.Color.dark_blue()
+    Returns:
+        discord.Embed: Formatted weather embed
+    """
+    # Get temperature unit symbol
+    temp_unit = "°F" if units == "imperial" else "°C"
+    wind_unit = "mph" if units == "imperial" else "km/h"
+    precip_unit = "in" if units == "imperial" else "mm"
+    pressure_unit = "inHg" if units == "imperial" else "mb"
+    visibility_unit = "mi" if units == "imperial" else "km"
+    
+    # Weather emoji with fallback
+    weather_emoji = getattr(weather.kind, 'emoji', '🌤️') if hasattr(weather, 'kind') else '🌤️'
+    
+    # Format date
+    date_str = weather.datetime.strftime('%A, %B %d, %Y at %I:%M %p') if hasattr(weather, 'datetime') else "Unknown Date"
+    
+    # Create title and description
+    location_name = getattr(weather, 'location', 'Unknown Location')
+    description_text = getattr(weather, 'description', 'No description available')
+    temperature = getattr(weather, 'temperature', 'N/A')
+    
+    title = f"{weather_emoji} Weather in {location_name}"
+    description = f"**{description_text}** • **{temperature}{temp_unit}**\n📅 {date_str}"
+    
+    # Determine embed color based on temperature
+    try:
+        temp_value = float(temperature) if isinstance(temperature, (int, float, str)) else 0
+        if units == "imperial":
+            color = (discord.Color.red() if temp_value >= 80 else 
+                    discord.Color.orange() if temp_value >= 60 else 
+                    discord.Color.blue() if temp_value >= 40 else 
+                    discord.Color.dark_blue())
+        else:  # Celsius
+            color = (discord.Color.red() if temp_value >= 27 else 
+                    discord.Color.orange() if temp_value >= 15 else 
+                    discord.Color.blue() if temp_value >= 4 else 
+                    discord.Color.dark_blue())
+    except (ValueError, TypeError):
+        color = discord.Color.blue()
     
     embed = create_embed(title, description, color)
     
-    if weather.region and weather.country:
-        embed.add_field(name="📍 Location", value=f"{weather.region}, {weather.country}", inline=False)
+    # Add location details with better formatting
+    if hasattr(weather, 'region') and hasattr(weather, 'country'):
+        if weather.region and weather.country:
+            location_parts = [weather.region, weather.country]
+            embed.add_field(
+                name="📍 Location", 
+                value=" • ".join(location_parts), 
+                inline=False
+            )
     
-    embed.add_field(name="🌡️ Temperature", value=f"{weather.temperature}°F", inline=True)
-    embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}°F", inline=True)
-    embed.add_field(name="💧 Humidity", value=f"{weather.humidity}%", inline=True)
+    # Temperature information
+    embed.add_field(name="🌡️ Temperature", value=f"{temperature}{temp_unit}", inline=True)
     
-    wind_info = f"{weather.wind_speed} mph"
-    if weather.wind_direction:
-        direction = str(weather.wind_direction)
-        if hasattr(weather.wind_direction, "emoji"):
-            direction += f" {weather.wind_direction.emoji}"
-        wind_info += f" {direction}"
-    embed.add_field(name="💨 Wind", value=wind_info, inline=True)
+    if hasattr(weather, 'feels_like') and weather.feels_like:
+        embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}{temp_unit}", inline=True)
     
-    embed.add_field(name="🌧️ Precipitation", value=f"{weather.precipitation} in", inline=True)
-    embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} inHg", inline=True)
+    if hasattr(weather, 'humidity') and weather.humidity is not None:
+        humidity_emoji = "💧" if weather.humidity > 70 else "💦"
+        embed.add_field(name=f"{humidity_emoji} Humidity", value=f"{weather.humidity}%", inline=True)
     
-    if weather.visibility:
-        embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} mi", inline=True)
+    # Wind information with enhanced formatting
+    if hasattr(weather, 'wind_speed') and weather.wind_speed is not None:
+        wind_info = f"{weather.wind_speed} {wind_unit}"
+        
+        if hasattr(weather, 'wind_direction') and weather.wind_direction:
+            direction = str(weather.wind_direction)
+            if hasattr(weather.wind_direction, "emoji"):
+                direction = f"{weather.wind_direction.emoji} {direction}"
+            wind_info += f"\n{direction}"
+        
+        # Add wind condition description
+        try:
+            wind_speed_val = float(weather.wind_speed)
+            if units == "imperial":
+                wind_desc = ("Calm" if wind_speed_val < 5 else 
+                           "Light" if wind_speed_val < 15 else 
+                           "Moderate" if wind_speed_val < 25 else "Strong")
+            else:  # km/h
+                wind_desc = ("Calm" if wind_speed_val < 8 else 
+                           "Light" if wind_speed_val < 24 else 
+                           "Moderate" if wind_speed_val < 40 else "Strong")
+            wind_info += f"\n({wind_desc})"
+        except (ValueError, TypeError):
+            pass
+        
+        embed.add_field(name="💨 Wind", value=wind_info, inline=True)
     
-    if weather.ultraviolet:
+    # Precipitation
+    if hasattr(weather, 'precipitation') and weather.precipitation is not None:
+        precip_value = weather.precipitation
+        precip_emoji = "🌧️" if precip_value > 0 else "☀️"
+        embed.add_field(name=f"{precip_emoji} Precipitation", value=f"{precip_value} {precip_unit}", inline=True)
+    
+    # Atmospheric pressure
+    if hasattr(weather, 'pressure') and weather.pressure is not None:
+        embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} {pressure_unit}", inline=True)
+    
+    # Visibility
+    if hasattr(weather, 'visibility') and weather.visibility:
+        try:
+            vis_value = float(weather.visibility)
+            vis_emoji = "👁️" if vis_value >= 6 else "🌫️"
+            vis_condition = " (Excellent)" if vis_value >= 10 else " (Good)" if vis_value >= 6 else " (Poor)"
+            embed.add_field(
+                name=f"{vis_emoji} Visibility", 
+                value=f"{weather.visibility} {visibility_unit}{vis_condition}", 
+                inline=True
+            )
+        except (ValueError, TypeError):
+            embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} {visibility_unit}", inline=True)
+    
+    # UV Index with warnings
+    if hasattr(weather, 'ultraviolet') and weather.ultraviolet:
         uv_text = str(weather.ultraviolet)
+        
         if hasattr(weather.ultraviolet, "index"):
             uv_index = weather.ultraviolet.index
-            uv_text = f"{uv_index}/10" + (" ⚠️" if uv_index >= 8 else " 🟡" if uv_index >= 6 else "")
+            
+            # Enhanced UV index display with warnings
+            if uv_index >= 11:
+                uv_display = f"{uv_index}/10+ 🟣 Extreme"
+            elif uv_index >= 8:
+                uv_display = f"{uv_index}/10 🔴 Very High"
+            elif uv_index >= 6:
+                uv_display = f"{uv_index}/10 🟠 High"
+            elif uv_index >= 3:
+                uv_display = f"{uv_index}/10 🟡 Moderate"
+            else:
+                uv_display = f"{uv_index}/10 🟢 Low"
+            
+            uv_text = uv_display
+        
         embed.add_field(name="☀️ UV Index", value=uv_text, inline=True)
     
-    if weather.daily_forecasts:
+    # Enhanced forecast section
+    if hasattr(weather, 'daily_forecasts') and weather.daily_forecasts:
         forecast_text = ""
-        for i, day in enumerate(weather.daily_forecasts[:4]):
-            day_name = "Today" if i == 0 else "Tomorrow" if i == 1 else day.date.strftime('%A') if hasattr(day, 'date') else f"Day {i+1}"
+        
+        for i, day in enumerate(weather.daily_forecasts[:5]):  # Show up to 5 days
+            # Day name
+            if i == 0:
+                day_name = "Today"
+            elif i == 1:
+                day_name = "Tomorrow"
+            else:
+                day_name = day.date.strftime('%A') if hasattr(day, 'date') else f"Day {i+1}"
+            
+            # Weather emoji
             emoji = getattr(getattr(day, 'kind', None), 'emoji', '🌤️')
             
-            desc = day.description if hasattr(day, 'description') else str(day.kind) if hasattr(day, 'kind') else ""
+            # Description
+            desc = ""
+            if hasattr(day, 'description'):
+                desc = day.description
+            elif hasattr(day, 'kind'):
+                desc = str(day.kind)
             
+            # Temperature info with better formatting
             temp_high = getattr(day, 'highest', None) or getattr(day, 'high', None) or getattr(day, 'temperature', None)
             temp_low = getattr(day, 'lowest', None) or getattr(day, 'low', None)
             
-            temp_info = f"H: {temp_high}°F, L: {temp_low}°F" if temp_high and temp_low else f"{temp_high}°F" if temp_high else ""
+            if temp_high and temp_low:
+                temp_info = f"**H:** {temp_high}{temp_unit} **L:** {temp_low}{temp_unit}"
+            elif temp_high:
+                temp_info = f"**{temp_high}{temp_unit}**"
+            else:
+                temp_info = ""
             
-            forecast_text += f"{emoji} **{day_name}**: {desc}"
+            # Build forecast line
+            forecast_line = f"{emoji} **{day_name}**"
+            if desc:
+                forecast_line += f": {desc}"
             if temp_info:
-                forecast_text += f" • {temp_info}"
-            forecast_text += "\n"
+                forecast_line += f"\n{temp_info}"
+            
+            forecast_text += forecast_line + "\n"
         
         if forecast_text:
-            embed.add_field(name="📅 Forecast", value=forecast_text, inline=False)
+            embed.add_field(name="📅 5-Day Forecast", value=forecast_text.strip(), inline=False)
     
-    embed.set_footer(text=f"Requested by {user.display_name} • {weather.datetime.strftime('%I:%M %p')}", icon_url=user.display_avatar.url)
+    # Footer with timestamp and user info
+    timestamp = weather.datetime.strftime('%I:%M %p') if hasattr(weather, 'datetime') else "Unknown Time"
+    embed.set_footer(
+        text=f"Requested by {user.display_name} • Updated: {timestamp}",
+        icon_url=user.display_avatar.url
+    )
+    
+    # Add thumbnail (optional - could use a weather icon if available)
+    # embed.set_thumbnail(url="weather_icon_url_here")
+    
+    return embed@bot.tree.command(name="weather", description="Get weather information.")
+@app_commands.describe(
+    city="City name (e.g., 'New York' or 'London, UK')",
+    units="Temperature units (default: Fahrenheit)"
+)
+@app_commands.choices(units=[
+    app_commands.Choice(name="Fahrenheit (°F)", value="imperial"),
+    app_commands.Choice(name="Celsius (°C)", value="metric")
+])
+@rate_limit
+async def weather_command(interaction: discord.Interaction, city: str, units: str = "imperial"):
+    """Enhanced weather command with better error handling and caching."""
+    city = city.strip()
+    
+    # Input validation
+    if not city or len(city) < Config.MIN_CITY_NAME_LENGTH:
+        embed = create_embed("❌ Invalid Input", "Please provide a valid city name!", discord.Color.red())
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    if len(city) > Config.MAX_CITY_NAME_LENGTH:
+        embed = create_embed("❌ City Name Too Long", f"Maximum {Config.MAX_CITY_NAME_LENGTH} characters!", discord.Color.red())
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    # Sanitize input to prevent injection
+    city = re.sub(r'[<>\'\"\\]', '', city)
+    
+    await interaction.response.defer()
+    
+    try:
+        # Show loading message
+        embed = create_embed("🔍 Fetching Weather...", f"Getting weather data for **{city}**...", discord.Color.yellow())
+        await interaction.edit_original_response(embed=embed)
+        
+        # Convert units parameter to python_weather format
+        unit_type = python_weather.IMPERIAL if units == "imperial" else python_weather.METRIC
+        
+        async with python_weather.Client(unit=unit_type) as client:
+            weather = await asyncio.wait_for(client.get(city), timeout=10.0)
+            
+            # Create and send weather embed
+            embed = create_weather_embed(weather, interaction.user, units)
+            await interaction.edit_original_response(embed=embed)
+            
+    except asyncio.TimeoutError:
+        logger.error(f"Weather API timeout for city: {city}")
+        embed = create_embed(
+            "⏱️ Request Timeout", 
+            f"The weather service took too long to respond for '{city}'. Please try again.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
+    except RequestError as e:
+        logger.error(f"Weather API request error for '{city}': {e}")
+        embed = create_embed(
+            "🌐 API Error", 
+            f"Couldn't find weather data for '{city}'.\n\n**Suggestions:**\n• Check spelling\n• Try format: 'City, Country' (e.g., 'Paris, France')\n• Use English city names",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
+    except Error as e:
+        logger.error(f"Weather library error for '{city}': {e}")
+        embed = create_embed(
+            "❌ Weather Service Error", 
+            f"Unable to retrieve weather data for '{city}'. The location may not be recognized.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+        
+    except Exception as e:
+        logger.exception(f"Unexpected weather error for '{city}': {e}")
+        embed = create_embed(
+            "💥 Unexpected Error", 
+            "Something went wrong while fetching the weather. Please try again later.",
+            discord.Color.red()
+        )
+        await interaction.edit_original_response(embed=embed)
+
+
+def create_weather_embed(weather, user: discord.User, units: str = "imperial") -> discord.Embed:
+    """
+    Create an enhanced weather embed with improved formatting and data display.
+    
+    Args:
+        weather: Weather data object from python_weather
+        user: Discord user who requested the weather
+        units: Unit system ('imperial' or 'metric')
+    
+    Returns:
+        discord.Embed: Formatted weather embed
+    """
+    # Get temperature unit symbol
+    temp_unit = "°F" if units == "imperial" else "°C"
+    wind_unit = "mph" if units == "imperial" else "km/h"
+    precip_unit = "in" if units == "imperial" else "mm"
+    pressure_unit = "inHg" if units == "imperial" else "mb"
+    visibility_unit = "mi" if units == "imperial" else "km"
+    
+    # Weather emoji with fallback
+    weather_emoji = getattr(weather.kind, 'emoji', '🌤️') if hasattr(weather, 'kind') else '🌤️'
+    
+    # Format date
+    date_str = weather.datetime.strftime('%A, %B %d, %Y at %I:%M %p') if hasattr(weather, 'datetime') else "Unknown Date"
+    
+    # Create title and description
+    location_name = getattr(weather, 'location', 'Unknown Location')
+    description_text = getattr(weather, 'description', 'No description available')
+    temperature = getattr(weather, 'temperature', 'N/A')
+    
+    title = f"{weather_emoji} Weather in {location_name}"
+    description = f"**{description_text}** • **{temperature}{temp_unit}**\n📅 {date_str}"
+    
+    # Determine embed color based on temperature
+    try:
+        temp_value = float(temperature) if isinstance(temperature, (int, float, str)) else 0
+        if units == "imperial":
+            color = (discord.Color.red() if temp_value >= 80 else 
+                    discord.Color.orange() if temp_value >= 60 else 
+                    discord.Color.blue() if temp_value >= 40 else 
+                    discord.Color.dark_blue())
+        else:  # Celsius
+            color = (discord.Color.red() if temp_value >= 27 else 
+                    discord.Color.orange() if temp_value >= 15 else 
+                    discord.Color.blue() if temp_value >= 4 else 
+                    discord.Color.dark_blue())
+    except (ValueError, TypeError):
+        color = discord.Color.blue()
+    
+    embed = create_embed(title, description, color)
+    
+    # Add location details with better formatting
+    if hasattr(weather, 'region') and hasattr(weather, 'country'):
+        if weather.region and weather.country:
+            location_parts = [weather.region, weather.country]
+            embed.add_field(
+                name="📍 Location", 
+                value=" • ".join(location_parts), 
+                inline=False
+            )
+    
+    # Temperature information
+    embed.add_field(name="🌡️ Temperature", value=f"{temperature}{temp_unit}", inline=True)
+    
+    if hasattr(weather, 'feels_like') and weather.feels_like:
+        embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}{temp_unit}", inline=True)
+    
+    if hasattr(weather, 'humidity') and weather.humidity is not None:
+        humidity_emoji = "💧" if weather.humidity > 70 else "💦"
+        embed.add_field(name=f"{humidity_emoji} Humidity", value=f"{weather.humidity}%", inline=True)
+    
+    # Wind information with enhanced formatting
+    if hasattr(weather, 'wind_speed') and weather.wind_speed is not None:
+        wind_info = f"{weather.wind_speed} {wind_unit}"
+        
+        if hasattr(weather, 'wind_direction') and weather.wind_direction:
+            direction = str(weather.wind_direction)
+            if hasattr(weather.wind_direction, "emoji"):
+                direction = f"{weather.wind_direction.emoji} {direction}"
+            wind_info += f"\n{direction}"
+        
+        # Add wind condition description
+        try:
+            wind_speed_val = float(weather.wind_speed)
+            if units == "imperial":
+                wind_desc = ("Calm" if wind_speed_val < 5 else 
+                           "Light" if wind_speed_val < 15 else 
+                           "Moderate" if wind_speed_val < 25 else "Strong")
+            else:  # km/h
+                wind_desc = ("Calm" if wind_speed_val < 8 else 
+                           "Light" if wind_speed_val < 24 else 
+                           "Moderate" if wind_speed_val < 40 else "Strong")
+            wind_info += f"\n({wind_desc})"
+        except (ValueError, TypeError):
+            pass
+        
+        embed.add_field(name="💨 Wind", value=wind_info, inline=True)
+    
+    # Precipitation
+    if hasattr(weather, 'precipitation') and weather.precipitation is not None:
+        precip_value = weather.precipitation
+        precip_emoji = "🌧️" if precip_value > 0 else "☀️"
+        embed.add_field(name=f"{precip_emoji} Precipitation", value=f"{precip_value} {precip_unit}", inline=True)
+    
+    # Atmospheric pressure
+    if hasattr(weather, 'pressure') and weather.pressure is not None:
+        embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} {pressure_unit}", inline=True)
+    
+    # Visibility
+    if hasattr(weather, 'visibility') and weather.visibility:
+        try:
+            vis_value = float(weather.visibility)
+            vis_emoji = "👁️" if vis_value >= 6 else "🌫️"
+            vis_condition = " (Excellent)" if vis_value >= 10 else " (Good)" if vis_value >= 6 else " (Poor)"
+            embed.add_field(
+                name=f"{vis_emoji} Visibility", 
+                value=f"{weather.visibility} {visibility_unit}{vis_condition}", 
+                inline=True
+            )
+        except (ValueError, TypeError):
+            embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} {visibility_unit}", inline=True)
+    
+    # UV Index with warnings
+    if hasattr(weather, 'ultraviolet') and weather.ultraviolet:
+        uv_text = str(weather.ultraviolet)
+        
+        if hasattr(weather.ultraviolet, "index"):
+            uv_index = weather.ultraviolet.index
+            
+            # Enhanced UV index display with warnings
+            if uv_index >= 11:
+                uv_display = f"{uv_index}/10+ 🟣 Extreme"
+            elif uv_index >= 8:
+                uv_display = f"{uv_index}/10 🔴 Very High"
+            elif uv_index >= 6:
+                uv_display = f"{uv_index}/10 🟠 High"
+            elif uv_index >= 3:
+                uv_display = f"{uv_index}/10 🟡 Moderate"
+            else:
+                uv_display = f"{uv_index}/10 🟢 Low"
+            
+            uv_text = uv_display
+        
+        embed.add_field(name="☀️ UV Index", value=uv_text, inline=True)
+    
+    # Enhanced forecast section
+    if hasattr(weather, 'daily_forecasts') and weather.daily_forecasts:
+        forecast_text = ""
+        
+        for i, day in enumerate(weather.daily_forecasts[:5]):  # Show up to 5 days
+            # Day name
+            if i == 0:
+                day_name = "Today"
+            elif i == 1:
+                day_name = "Tomorrow"
+            else:
+                day_name = day.date.strftime('%A') if hasattr(day, 'date') else f"Day {i+1}"
+            
+            # Weather emoji
+            emoji = getattr(getattr(day, 'kind', None), 'emoji', '🌤️')
+            
+            # Description
+            desc = ""
+            if hasattr(day, 'description'):
+                desc = day.description
+            elif hasattr(day, 'kind'):
+                desc = str(day.kind)
+            
+            # Temperature info with better formatting
+            temp_high = getattr(day, 'highest', None) or getattr(day, 'high', None) or getattr(day, 'temperature', None)
+            temp_low = getattr(day, 'lowest', None) or getattr(day, 'low', None)
+            
+            if temp_high and temp_low:
+                temp_info = f"**H:** {temp_high}{temp_unit} **L:** {temp_low}{temp_unit}"
+            elif temp_high:
+                temp_info = f"**{temp_high}{temp_unit}**"
+            else:
+                temp_info = ""
+            
+            # Build forecast line
+            forecast_line = f"{emoji} **{day_name}**"
+            if desc:
+                forecast_line += f": {desc}"
+            if temp_info:
+                forecast_line += f"\n{temp_info}"
+            
+            forecast_text += forecast_line + "\n"
+        
+        if forecast_text:
+            embed.add_field(name="📅 5-Day Forecast", value=forecast_text.strip(), inline=False)
+    
+    # Footer with timestamp and user info
+    timestamp = weather.datetime.strftime('%I:%M %p') if hasattr(weather, 'datetime') else "Unknown Time"
+    embed.set_footer(
+        text=f"Requested by {user.display_name} • Updated: {timestamp}",
+        icon_url=user.display_avatar.url
+    )
+
     return embed
 
 # ========== Bot Events ==========
@@ -1024,10 +1610,9 @@ async def on_ready():
     
     if not status_update_task.is_running():
         status_update_task.start()
-    
-    # Start cleanup tasks if music is available
-    if YT_DLP_AVAILABLE and VOICE_AVAILABLE and not cleanup_inactive_queues.is_running():
-        cleanup_inactive_queues.start()
+
+    if not voice_keepalive.is_running():
+        voice_keepalive.start()
 
 @bot.event
 async def on_guild_join(guild):
@@ -1082,6 +1667,348 @@ async def on_voice_state_update(member, before, after):
         guild_key = str(before.channel.guild.id)
         bot_state.music_queues.pop(guild_key, None)
 
+@app.route('/github-webhook', methods=['POST'])
+def github_webhook():
+    """Handle GitHub webhook events."""
+    try:
+        # Verify webhook signature
+        signature = request.headers.get('X-Hub-Signature-256', '')
+        if Config.GITHUB_WEBHOOK_SECRET:
+            if not verify_github_signature(request.data, signature, Config.GITHUB_WEBHOOK_SECRET):
+                logger.warning("Invalid GitHub webhook signature")
+                return jsonify({"error": "Invalid signature"}), 401
+        
+        event_type = request.headers.get('X-GitHub-Event', 'unknown')
+        payload = request.json
+        
+        # Handle different event types
+        if event_type == 'push':
+            asyncio.run_coroutine_threadsafe(
+                handle_push_event(payload),
+                bot.loop
+            )
+        elif event_type == 'pull_request':
+            asyncio.run_coroutine_threadsafe(
+                handle_pr_event(payload),
+                bot.loop
+            )
+        elif event_type == 'issues':
+            asyncio.run_coroutine_threadsafe(
+                handle_issue_event(payload),
+                bot.loop
+            )
+        elif event_type == 'ping':
+            return jsonify({"message": "Webhook received!"}), 200
+        
+        return jsonify({"status": "success"}), 200
+        
+    except Exception as e:
+        logger.error(f"GitHub webhook error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+def verify_github_signature(payload_body, signature_header, secret):
+    """Verify that the payload was sent from GitHub by validating SHA256."""
+    if not signature_header:
+        return False
+    
+    hash_object = hmac.new(
+        secret.encode('utf-8'),
+        msg=payload_body,
+        digestmod=hashlib.sha256
+    )
+    expected_signature = "sha256=" + hash_object.hexdigest()
+    
+    return hmac.compare_digest(expected_signature, signature_header)
+
+async def handle_push_event(payload):
+    """Handle GitHub push events."""
+    try:
+        channel = bot.get_channel(Config.GITHUB_CHANNEL_ID)
+        if not channel:
+            logger.error(f"GitHub notification channel {Config.GITHUB_CHANNEL_ID} not found")
+            return
+        
+        # Extract push information
+        pusher = payload.get('pusher', {}).get('name', 'Unknown')
+        repo_name = payload.get('repository', {}).get('full_name', 'Unknown Repo')
+        repo_url = payload.get('repository', {}).get('html_url', '')
+        ref = payload.get('ref', 'refs/heads/main').split('/')[-1]  # Branch name
+        commits = payload.get('commits', [])
+        compare_url = payload.get('compare', '')
+        
+        # Don't send notification if no commits
+        if not commits:
+            return
+        
+        # Create embed
+        embed = discord.Embed(
+            title=f"🔨 New Push to {repo_name}",
+            description=f"**{pusher}** pushed {len(commits)} commit{'s' if len(commits) != 1 else ''} to `{ref}`",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add repository info
+        embed.add_field(
+            name="📦 Repository",
+            value=f"[{repo_name}]({repo_url})",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🌿 Branch",
+            value=f"`{ref}`",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📊 Commits",
+            value=f"{len(commits)}",
+            inline=True
+        )
+        
+        # Add commit details (up to 5 most recent)
+        commit_details = []
+        for commit in commits[:5]:
+            sha = commit.get('id', '')[:7]  # Short SHA
+            message = commit.get('message', 'No message').split('\n')[0][:100]  # First line only
+            author = commit.get('author', {}).get('name', 'Unknown')
+            commit_url = commit.get('url', '')
+            
+            commit_details.append(f"`{sha}` [{message}]({commit_url})\n👤 {author}")
+        
+        if commit_details:
+            embed.add_field(
+                name="📝 Commits",
+                value="\n\n".join(commit_details),
+                inline=False
+            )
+        
+        if len(commits) > 5:
+            embed.add_field(
+                name="➕ More",
+                value=f"... and {len(commits) - 5} more commit{'s' if len(commits) - 5 != 1 else ''}",
+                inline=False
+            )
+        
+        # Add compare link
+        if compare_url:
+            embed.add_field(
+                name="🔗 Compare Changes",
+                value=f"[View All Changes]({compare_url})",
+                inline=False
+            )
+        
+        # Set footer with pusher info
+        embed.set_footer(
+            text=f"Pushed by {pusher}",
+            icon_url=payload.get('sender', {}).get('avatar_url', '')
+        )
+        
+        await channel.send(embed=embed)
+        logger.info(f"Sent GitHub push notification for {repo_name}")
+        
+    except Exception as e:
+        logger.error(f"Error handling push event: {e}")
+
+async def handle_pr_event(payload):
+    """Handle GitHub pull request events."""
+    try:
+        channel = bot.get_channel(Config.GITHUB_CHANNEL_ID)
+        if not channel:
+            return
+        
+        action = payload.get('action', 'unknown')
+        pr = payload.get('pull_request', {})
+        repo_name = payload.get('repository', {}).get('full_name', 'Unknown Repo')
+        
+        # Only notify on opened, closed, or merged PRs
+        if action not in ['opened', 'closed', 'reopened', 'merged']:
+            return
+        
+        pr_number = pr.get('number', 0)
+        pr_title = pr.get('title', 'No title')
+        pr_url = pr.get('html_url', '')
+        author = pr.get('user', {}).get('login', 'Unknown')
+        avatar = pr.get('user', {}).get('avatar_url', '')
+        
+        # Determine color based on action
+        color_map = {
+            'opened': discord.Color.green(),
+            'closed': discord.Color.red(),
+            'reopened': discord.Color.orange(),
+            'merged': discord.Color.purple()
+        }
+        color = color_map.get(action, discord.Color.blue())
+        
+        # Determine emoji
+        emoji_map = {
+            'opened': '🟢',
+            'closed': '🔴',
+            'reopened': '🟠',
+            'merged': '🟣'
+        }
+        emoji = emoji_map.get(action, '📋')
+        
+        embed = discord.Embed(
+            title=f"{emoji} Pull Request #{pr_number} {action.capitalize()}",
+            description=f"**{pr_title}**",
+            url=pr_url,
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(name="📦 Repository", value=repo_name, inline=True)
+        embed.add_field(name="👤 Author", value=author, inline=True)
+        embed.add_field(name="🔢 PR Number", value=f"#{pr_number}", inline=True)
+        
+        embed.set_footer(text=f"Pull Request {action}", icon_url=avatar)
+        
+        await channel.send(embed=embed)
+        logger.info(f"Sent GitHub PR notification for {repo_name} PR #{pr_number}")
+        
+    except Exception as e:
+        logger.error(f"Error handling PR event: {e}")
+
+async def handle_issue_event(payload):
+    """Handle GitHub issue events."""
+    try:
+        channel = bot.get_channel(Config.GITHUB_CHANNEL_ID)
+        if not channel:
+            return
+        
+        action = payload.get('action', 'unknown')
+        issue = payload.get('issue', {})
+        repo_name = payload.get('repository', {}).get('full_name', 'Unknown Repo')
+        
+        # Only notify on opened or closed issues
+        if action not in ['opened', 'closed', 'reopened']:
+            return
+        
+        issue_number = issue.get('number', 0)
+        issue_title = issue.get('title', 'No title')
+        issue_url = issue.get('html_url', '')
+        author = issue.get('user', {}).get('login', 'Unknown')
+        avatar = issue.get('user', {}).get('avatar_url', '')
+        
+        color = discord.Color.green() if action == 'opened' else discord.Color.red()
+        emoji = '🟢' if action == 'opened' else '🔴'
+        
+        embed = discord.Embed(
+            title=f"{emoji} Issue #{issue_number} {action.capitalize()}",
+            description=f"**{issue_title}**",
+            url=issue_url,
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(name="📦 Repository", value=repo_name, inline=True)
+        embed.add_field(name="👤 Author", value=author, inline=True)
+        embed.add_field(name="🔢 Issue Number", value=f"#{issue_number}", inline=True)
+        
+        embed.set_footer(text=f"Issue {action}", icon_url=avatar)
+        
+        await channel.send(embed=embed)
+        logger.info(f"Sent GitHub issue notification for {repo_name} issue #{issue_number}")
+        
+    except Exception as e:
+        logger.error(f"Error handling issue event: {e}")
+
+# ========== Admin Commands for GitHub Setup ==========
+@bot.tree.command(name="github-setup", description="Set the channel for GitHub notifications (Admin only)")
+@app_commands.describe(channel="The channel to send GitHub notifications to")
+@app_commands.default_permissions(administrator=True)
+async def github_setup_command(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Set the GitHub notification channel."""
+    try:
+        # Update the config (you'll want to save this to a file or database in production)
+        Config.GITHUB_CHANNEL_ID = channel.id
+        
+        embed = create_embed(
+            "✅ GitHub Notifications Configured",
+            f"GitHub notifications will be sent to {channel.mention}",
+            discord.Color.green()
+        )
+        
+        # Add webhook URL info
+        webhook_url = f"{os.getenv('BOT_URL', 'https://your-bot-url.com')}/github-webhook"
+        embed.add_field(
+            name="📡 Webhook URL",
+            value=f"```{webhook_url}```",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="⚙️ Setup Instructions",
+            value=(
+                "1. Go to your GitHub repo → Settings → Webhooks\n"
+                "2. Click 'Add webhook'\n"
+                "3. Paste the webhook URL above\n"
+                "4. Set Content type to 'application/json'\n"
+                "5. Add your webhook secret (if configured)\n"
+                "6. Select events: Push, Pull Request, Issues\n"
+                "7. Click 'Add webhook'"
+            ),
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Send test message to the channel
+        test_embed = create_embed(
+            "🎉 GitHub Notifications Active",
+            "This channel will receive GitHub push notifications!",
+            discord.Color.green()
+        )
+        await channel.send(embed=test_embed)
+        
+    except Exception as e:
+        logger.error(f"Error in github-setup: {e}")
+        embed = create_embed("❌ Setup Failed", "Couldn't configure GitHub notifications.", discord.Color.red())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="github-test", description="Send a test GitHub notification (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def github_test_command(interaction: discord.Interaction):
+    """Send a test GitHub notification."""
+    try:
+        channel = bot.get_channel(Config.GITHUB_CHANNEL_ID)
+        if not channel:
+            return await interaction.response.send_message(
+                "❌ GitHub notification channel not configured. Use `/github-setup` first.",
+                ephemeral=True
+            )
+        
+        # Create test notification
+        embed = discord.Embed(
+            title="🔨 Test Push to your-repo/main",
+            description="**TestUser** pushed 2 commits to `main`",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(name="📦 Repository", value="[your-username/your-repo](https://github.com)", inline=True)
+        embed.add_field(name="🌿 Branch", value="`main`", inline=True)
+        embed.add_field(name="📊 Commits", value="2", inline=True)
+        
+        embed.add_field(
+            name="📝 Commits",
+            value=(
+                "`abc1234` [Added new feature](https://github.com)\n👤 TestUser\n\n"
+                "`def5678` [Fixed bug](https://github.com)\n👤 TestUser"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text="Pushed by TestUser • This is a test notification")
+        
+        await channel.send(embed=embed)
+        await interaction.response.send_message(f"✅ Test notification sent to {channel.mention}", ephemeral=True)
+        
+    except Exception as e:
+        logger.error(f"Error in github-test: {e}")
+        await interaction.response.send_message("❌ Failed to send test notification.", ephemeral=True)
+
 # ========== Background Tasks ==========
 @tasks.loop(minutes=30)
 async def status_update_task():
@@ -1094,77 +2021,34 @@ async def status_update_task():
 
 # ========== Cleanup ==========
 async def cleanup_resources():
-    """FIX: Improved cleanup with proper task cancellation"""
-    logger.info("🧹 Cleaning up resources...")
-    
-    # Stop background tasks
-    if status_update_task.is_running():
-        status_update_task.cancel()
-    
-    if YT_DLP_AVAILABLE and VOICE_AVAILABLE and cleanup_inactive_queues.is_running():
-        cleanup_inactive_queues.cancel()
-    
-    # Close HTTP session
+    logger.info("🧹 Cleaning up...")
     await bot_state.cleanup()
     
-    # Disconnect from all voice channels
     if VOICE_AVAILABLE:
         for guild in bot.guilds:
             if guild.voice_client:
-                try:
-                    await guild.voice_client.disconnect()
-                except Exception as e:
-                    logger.error(f"Error disconnecting from {guild.name}: {e}")
+                await guild.voice_client.disconnect()
     
-    # Clear all queues
     bot_state.music_queues.clear()
-    bot_state.request_counts.clear()
-    bot_state.now_playing.clear()
-    
-    logger.info("✅ Cleanup complete")
+    logger.info("✅ Cleanup done")
 
-# FIX: Proper signal handler that works with asyncio
-def setup_signal_handlers(loop):
-    """Setup signal handlers that properly work with asyncio"""
-    def handle_signal(signum):
-        logger.info(f"📥 Received signal {signum}, initiating shutdown...")
-        # Set the shutdown event
-        bot_state.shutdown_event.set()
-        # Schedule the cleanup
-        asyncio.create_task(graceful_shutdown())
-    
-    if sys.platform != 'win32':
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda s=sig: handle_signal(s))
-    else:
-        # Windows doesn't support add_signal_handler
-        signal.signal(signal.SIGINT, lambda s, f: handle_signal(s))
-        signal.signal(signal.SIGTERM, lambda s, f: handle_signal(s))
+def signal_handler(signum, frame):
+    logger.info(f"📥 Signal {signum}, shutting down...")
+    asyncio.create_task(cleanup_resources())
+    sys.exit(0)
 
-async def graceful_shutdown():
-    """Perform graceful shutdown of the bot"""
-    logger.info("🛑 Starting graceful shutdown...")
-    try:
-        await cleanup_resources()
-        await bot.close()
-        logger.info("👋 Bot shutdown complete")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
-    finally:
-        # Force exit if we're still running
-        sys.exit(0)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+@bot.event
+async def on_disconnect():
+    logger.info("🔌 Bot disconnected")
+    await cleanup_resources()
 
 # ========== Startup ==========
 def start_discord_bot():
-    """FIX: Better bot startup with proper signal handling"""
     try:
-        logger.info("🚀 Starting Discord bot...")
-        
-        # Setup signal handlers before starting
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        setup_signal_handlers(loop)
-        
+        logger.info("🚀 Starting bot...")
         is_deployment = os.getenv("DEPLOYMENT") == "true" or "gunicorn" in os.environ.get("SERVER_SOFTWARE", "")
         
         if is_deployment:
@@ -1175,60 +2059,36 @@ def start_discord_bot():
             bot.run(DISCORD_TOKEN)
             
     except discord.LoginFailure:
-        logger.critical("❌ Invalid Discord token!")
+        logger.critical("❌ Invalid token!")
         sys.exit(1)
     except discord.HTTPException as e:
         logger.critical(f"❌ Discord HTTP error: {e}")
         sys.exit(1)
     except KeyboardInterrupt:
-        logger.info("⏹️ Keyboard interrupt received")
+        logger.info("⏹️ Shutdown requested")
     except Exception as e:
-        logger.critical(f"💥 Bot startup failed: {e}", exc_info=True)
+        logger.critical(f"💥 Startup failed: {e}", exc_info=True)
         sys.exit(1)
     finally:
         try:
-            loop = asyncio.get_event_loop()
-            if not loop.is_closed():
-                loop.run_until_complete(cleanup_resources())
-                loop.close()
+            asyncio.run(cleanup_resources())
         except Exception as e:
-            logger.error(f"Error during final cleanup: {e}")
-
-def start_flask_server():
-    """Start Flask server in a separate function"""
-    port = int(os.getenv("PORT", 5000))
-    logger.info(f"🌐 Starting Flask server on port {port}")
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+            logger.error(f"Cleanup error: {e}")
 
 # ========== Entry Point ==========
-if __name__ == "__main__":
-    # FIX: Use multiprocessing instead of threading for proper isolation
-    import multiprocessing
-    
-    logger.info("🚀 Starting bot with separate processes...")
-    
-    # Start Flask in a separate process
-    flask_process = multiprocessing.Process(target=start_flask_server, daemon=True)
-    flask_process.start()
-    
-    # Start Discord bot in main process (so signal handling works properly)
-    try:
-        start_discord_bot()
-    finally:
-        # Cleanup Flask process
-        if flask_process.is_alive():
-            logger.info("Terminating Flask process...")
-            flask_process.terminate()
-            flask_process.join(timeout=5)
-            if flask_process.is_alive():
-                flask_process.kill()
+if __name__ != "__main__":
+    Thread(target=start_discord_bot, daemon=False).start()
 
-else:
-    # FIX: When imported as a module (e.g., by gunicorn), don't start bot in thread
-    # Instead, provide separate entry points
-    logger.warning("⚠️ Module imported - Discord bot not started")
-    logger.warning("⚠️ Run this file directly with 'python bot.py' to start both services")
-    logger.warning("⚠️ Or deploy Discord bot and Flask separately for production")
+application = app
+
+if __name__ == "__main__":
+    import atexit
+    atexit.register(lambda: asyncio.run(cleanup_resources()))
     
-    # Only export Flask app for WSGI servers
-    application = app
+    Thread(
+        target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=False, use_reloader=False),
+        daemon=True
+    ).start()
+    
+    logger.info(f"🌐 Flask server on port {os.getenv('PORT', 5000)}")
+    start_discord_bot()
