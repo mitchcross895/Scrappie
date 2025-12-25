@@ -1,4 +1,4 @@
-# Discord Bot
+# Scrappie - Discord Bot
 
 This repository contains a Discord bot (and a small Flask health endpoint) with these primary features:
 
