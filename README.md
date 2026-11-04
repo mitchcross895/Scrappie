@@ -22,6 +22,11 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 	- `/ping` — Returns latency, uptime, guild/user counts.
 	- `/help` — Shows a command summary.
 
+- **Destiny 2** (needs `BUNGIE_API_KEY`)
+	- `/item <name>` — Weapon or armor lookup with autocomplete.
+	- `/weekly` — Private preview of the weekly raid post.
+	- Automatic weekly post at Tuesday 17:00 UTC (11am CST, 12pm CDT) with the featured raids, modifiers, drops, set bonuses and a labelled one-week prediction. Needs `WEEKLY_RESET_CHANNEL_ID`.
+
 - **Web health**
 	- A small Flask app exposes health endpoints when running:
 		- `GET /` — Basic status JSON
@@ -43,6 +48,8 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 
 - `DISCORD_TOKEN` (required) — Bot token used to connect to Discord.
 - `PORT` (optional) — Port for the Flask health server (default: 5000).
+- `BUNGIE_API_KEY` (optional) — Enables `/item`, `/weekly` and the weekly post. Get one at bungie.net/en/Application.
+- `WEEKLY_RESET_CHANNEL_ID` (optional) — Channel for the automatic weekly post. Without it the commands still work and nothing is posted.
 
 ## Quick start (development)
 
@@ -81,16 +88,26 @@ The bot will start a Flask health server on `0.0.0.0:$PORT` (default 5000) and c
 	- `utils.py` — Embed, HTTP, formatting and rate limit helpers.
 	- `voice.py` — Opus and yt-dlp availability.
 	- `music.py`, `trivia.py`, `weather.py`, `general.py` — Slash commands.
+	- `destiny.py` — Destiny commands and the weekly post loop.
+	- `data/` — Generated Bungie data (raids and items).
 	- `events.py` — Discord events and the status rotation task.
 	- `lifecycle.py` — Command registration order, startup and shutdown.
+- `tools/build_destiny_data.py` — Regenerates `scrappie/data/`.
 - `requirements.txt` — Python dependencies.
 - `nixpacks.toml` and `Procfile` — Production start command (`python main.py`).
 - `logs/` — Directory created at runtime containing `bot.log`.
+
+## Updating Destiny data
+
+After a Destiny 2 content patch, run `python tools/build_destiny_data.py` from the repo root. It needs about 1 GB of memory, downloads about 300 MB and needs no key. Commit `scrappie/data/`.
 
 ## Troubleshooting
 
 - Invalid or missing `DISCORD_TOKEN` exits the process on startup.
 - If music commands don't work, check for FFmpeg/Opus/yt-dlp installation and the bot logs.
+- No Destiny commands means `BUNGIE_API_KEY` is unset (logged at startup).
+- No weekly post: check `WEEKLY_RESET_CHANNEL_ID`, the bot's View Channel, Send Messages, Embed Links and Read Message History permissions there, and the `logs/bot.log` lines starting `Weekly post:`. A missed post is caught up within 24 hours of the reset, then skipped. Bungie maintenance only delays the post.
+- Modifier warnings in the log mean the Destiny data needs regenerating.
 - Use the Flask `GET /health` endpoint to check uptime when deployed.
 
 ## Contributing

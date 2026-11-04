@@ -10,10 +10,10 @@ from .state import bot_state
 def create_embed(title: str, description: str, color: discord.Color) -> discord.Embed:
     return discord.Embed(title=title, description=description, color=color)
 
-async def safe_api_request(url: str, params: dict = None, headers: dict = None) -> Optional[dict]:
+async def safe_api_request(url: str, params: dict = None, headers: dict = None, allow_redirects: bool = True) -> Optional[dict]:
     try:
         session = await bot_state.get_http_session()
-        async with session.get(url, params=params, headers=headers or {}) as response:
+        async with session.get(url, params=params, headers=headers or {}, allow_redirects=allow_redirects) as response:
             if response.status == 200:
                 # Check if response is JSON
                 content_type = response.headers.get('Content-Type', '')

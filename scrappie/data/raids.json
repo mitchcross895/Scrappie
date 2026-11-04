@@ -1,0 +1,1123 @@
+{
+ "manifest_version": "245114.26.10.13.2000-1-bnet.66137",
+ "rotation": [
+  "Last Wish",
+  "Garden of Salvation",
+  "Deep Stone Crypt",
+  "Vault of Glass",
+  "Vow of the Disciple",
+  "King's Fall",
+  "Root of Nightmares",
+  "Crota's End",
+  "Salvation's Edge"
+ ],
+ "weekly_objectives": [
+  406803827,
+  897950155,
+  1633394671,
+  1863972407,
+  2243638599,
+  2398860795,
+  3180884403,
+  3767289993,
+  3826130187
+ ],
+ "modifiers": {
+  "7205195": "Illicit Blade Battery",
+  "22073894": "A Challenge Awaits…",
+  "36103086": "Legendary",
+  "41985424": "Solstice Scorched",
+  "48917747": "Heavy Ammo Rules (Alpha)",
+  "68890788": "Air Superiority",
+  "77928345": "Rank-and-File Damage Increase",
+  "95459596": "Overcharged Rocket Launcher",
+  "112345143": "Hot Knife",
+  "158678773": "Ashes to Ashes",
+  "166293531": "Empath",
+  "183296536": "Special Ammo Increased",
+  "186409259": "Arc Threat",
+  "203094476": "Limited Revives",
+  "249172590": "3+ Feats: Armor Locks",
+  "261995644": "Grounded",
+  "313044339": "Tomb of Elders",
+  "317879233": "Glass",
+  "319774646": "Accelerator: Heavy Surge",
+  "321244196": "Shocker",
+  "372037179": "Iron Banner: Eruption",
+  "377122366": "Contestants: The Way of the Hoof",
+  "384012338": "A Challenge Awaits…",
+  "426976067": "Solar Surge",
+  "433047189": "Hardware Focus",
+  "438106166": "Champion Foes",
+  "441817655": "Galvanized",
+  "445825536": "Grandmaster Modifiers",
+  "474395167": "Havoc Rules",
+  "496726702": "Accelerator: Special Surge",
+  "512042454": "Stasis Threat",
+  "517070325": "Quitter Status: Good Standing",
+  "517221851": "Join In Progress Disabled",
+  "564695370": "Stasis Slide",
+  "612342440": "Onslaught Rules",
+  "614347129": "The Pathways",
+  "636485977": "Survival Rules",
+  "678087389": "Contest Mode",
+  "703904464": "Scorched Earth",
+  "707305737": "Heavy Ammo Rules (Bravo)",
+  "732136790": "Competitive Division Rules",
+  "762666189": "SRL Info",
+  "791047754": "Grandmaster Modifiers",
+  "795009574": "Overcharged Machine Gun",
+  "838742970": "Stasis Burn",
+  "839975808": "Volatile Weapon Mods: Bows",
+  "858319113": "Haste",
+  "915150015": "New Territory",
+  "941999846": "Galvanized",
+  "965929096": "Famine",
+  "998275325": "Epitaph",
+  "1009404927": "Contest Mode",
+  "1009802050": "Double Bonus Focus",
+  "1073070726": "Hot Step",
+  "1102647594": "Difficult Combatants [Shield-Piercing] [Disruption] [Stagger]",
+  "1108831612": "Brutal",
+  "1111960127": "Shielded Foes",
+  "1139702033": "Expert Modifiers",
+  "1148910733": "Quitter Status: Warning",
+  "1149526926": "Synergy",
+  "1171597537": "Double Nightfall Drops",
+  "1174869237": "Expert Modifiers",
+  "1175419662": "No Time Limit",
+  "1182595757": "Accelerator: Score Multiplier",
+  "1201462052": "Champions: Overload",
+  "1243852782": "Firesprite Fancy",
+  "1251619838": "Focused Activity",
+  "1253978620": "Focused Activity",
+  "1258160739": "Foundry Sponsorship: Suros",
+  "1262171714": "Champion Foes",
+  "1264329482": "Balanced Scales",
+  "1271621951": "Challenge Mode",
+  "1277882844": "Fired Up",
+  "1279873648": "Counterfeit",
+  "1282934989": "Overcharged Sniper Rifle",
+  "1326581064": "Overcharged Sword",
+  "1334082536": "Radiant Joy",
+  "1345530799": "Paracausal Focus",
+  "1359116199": "Rumble Rules",
+  "1365610347": "Hot Step",
+  "1376889134": "Brawler",
+  "1377045711": "Clash Rules",
+  "1396678533": "Mettle",
+  "1405899724": "Snowstorm",
+  "1409304555": "Foundry Sponsorship: Häkke",
+  "1410027362": "Blasts",
+  "1410304490": "Mettle",
+  "1427917745": "Blackout",
+  "1444852954": "Shielded Foes",
+  "1456687498": "Contestants: Disciples of the Neigh",
+  "1463636496": "All Ammo Famine",
+  "1463769380": "Iron",
+  "1486810101": "Equipment Locked",
+  "1493777741": "Cutting Edge Rules",
+  "1499411920": "Shot Caller",
+  "1505377421": "Placement Series",
+  "1508063554": "Equilibrium",
+  "1514862847": "Collision Rules",
+  "1535174577": "Denial",
+  "1545596619": "Escalating Difficulty",
+  "1553093202": "Shielded Foes",
+  "1553444357": "Martyr",
+  "1572913484": "Chill Touch",
+  "1575279060": "Solar Thermal Swap",
+  "1593143649": "Mettle",
+  "1598472557": "Strand Threat",
+  "1610597702": "Matchmaking",
+  "1651706850": "Shielded Foes",
+  "1681061669": "Heavyweight",
+  "1742448413": "Fabled",
+  "1743397814": "Boss Rotation",
+  "1792878913": "Mayhem Rules",
+  "1806775150": "Fireteam Power Boosting Disabled",
+  "1824568429": "Quitter Status: Restriction",
+  "1857942384": "Solar Storms",
+  "1879607770": "Solar Singe",
+  "1894842396": "Boss Rotation",
+  "1895965859": "Countdown Rules",
+  "1902839616": "Contestants: Disciples of the Neigh",
+  "1905191238": "Igniter",
+  "1909158654": "Restricted",
+  "1922761042": "Mettle",
+  "1926594730": "MA-75 Multipurpose",
+  "1931480264": "Keep It Loaded",
+  "1963653868": "Grit",
+  "1974251144": "Deluge",
+  "1974619026": "Champions: Barrier",
+  "1985989598": "Foundry Sponsorship: Tex Mechanica",
+  "1990363418": "Champion Foes",
+  "2001067135": "Checkmate Modifiers",
+  "2006149364": "Champion Foes",
+  "2042632950": "Brawn",
+  "2050297303": "Grenadier",
+  "2070085039": "Legendary",
+  "2072906693": "Stasis Thermal Swap",
+  "2117382464": "Class Warfare",
+  "2139004924": "Fire Pit",
+  "2160690722": "Boss Rotation",
+  "2178457119": "Overcharged Trace Rifle",
+  "2201679031": "Control Rules",
+  "2203953934": "Mettle",
+  "2208550513": "Empath",
+  "2214842664": "Meteors",
+  "2224206937": "Multiplicity",
+  "2229025674": "Contestants: The Way of the Hoof",
+  "2327064309": "Momentum Control Rules",
+  "2332732433": "Activity Scoring: Final Blows",
+  "2348177498": "Volatile Weapon Mods: Shotguns",
+  "2348541456": "Glass Cannons",
+  "2349614593": "Contest Mode",
+  "2378419670": "Frontliner",
+  "2432720046": "Stasis Singe",
+  "2471054449": "Avatara's Psyche",
+  "2475764450": "Champion Foes",
+  "2492586271": "PRISM Day",
+  "2500966831": "The Pathways",
+  "2533375223": "Melee Health Increase",
+  "2543520884": "Onslaught Rules",
+  "2567927655": "Expert Modifiers",
+  "2578907858": "Onslaught Rules",
+  "2620827383": "Void Singe",
+  "2626834038": "Overcharged Fusion Rifle",
+  "2639583702": "Healing Finishers",
+  "2675177792": "Contestants: The Way of the Hoof",
+  "2691200658": "Arc Surge",
+  "2742259563": "Surge Protector",
+  "2743796883": "Overcharged Glaive",
+  "2751349583": "Match Game",
+  "2752976185": "Notswap",
+  "2765933493": "A Challenge Awaits…",
+  "2768123075": "Mettle",
+  "2787320573": "Delayed Extinguish",
+  "2833087500": "Shielded Foes",
+  "2841995557": "Gambit Rules",
+  "2874799584": "Mettle",
+  "2882208979": "Iron Banner Multiplier",
+  "2889256157": "Extinguish",
+  "2896042597": "Galvanized III",
+  "2900518303": "Legendary",
+  "2948738685": "Escalating Difficulty",
+  "2949435712": "Exfiltration Countdown",
+  "2956696667": "Zealous",
+  "2960104736": "Countdown Rules",
+  "2975928611": "Promotion Series",
+  "2983647439": "Stasis Surge",
+  "3006430647": "Mettle",
+  "3021161702": "Arach-NO!",
+  "3037208116": "Subclass Locked",
+  "3090653889": "Fire and Ice",
+  "3101164718": "Chaff",
+  "3114697541": "Escalating Difficulty",
+  "3126095892": "Havoc Rules",
+  "3132780533": "Overcharged Shotgun",
+  "3139381566": "Shielded Foes",
+  "3155397946": "Energy Drain",
+  "3193240035": "Contest Mode Rules",
+  "3196075844": "Void Surge",
+  "3207332887": "Lockdown Rules",
+  "3224024504": "Longer Respawns",
+  "3230561446": "Shielded Foes",
+  "3240131679": "Advanced Modifiers",
+  "3244996239": "Elimination Rules",
+  "3256101957": "Contest Mode Rules",
+  "3283187796": "Mettle",
+  "3296644900": "Supremacy Rules",
+  "3304335675": "Shaxx's Training Weights",
+  "3307318061": "Champion Foes",
+  "3317700736": "The Pathways",
+  "3320777106": "Overcharged Linear Fusion Rifle",
+  "3346897368": "Attrition",
+  "3388053151": "Showdown Rules",
+  "3394691494": "Activity Scoring: Objectives",
+  "3398421092": "Multiplicity",
+  "3398790191": "Martyr",
+  "3456379103": "Iron Banner: Tribute",
+  "3486817119": "Team Scorched Rules",
+  "3497407670": "Galvanized II",
+  "3499660200": "Arena",
+  "3517267764": "Solar Threat",
+  "3520387869": "Zone Control Rules",
+  "3538098588": "Shielded Foes",
+  "3566681029": "Raider Shield",
+  "3584208130": "Invasion Timer",
+  "3592620740": "Scourge I",
+  "3620565640": "Contest Mode",
+  "3629079662": "Togetherness",
+  "3652821947": "Void Threat",
+  "3658790730": "Brawler",
+  "3660103421": "Medusa",
+  "3666600199": "Iron Banner: Fortress",
+  "3751099522": "Dawning: Snowball Fight",
+  "3751545222": "No Radar",
+  "3758645512": "Overcharged Grenade Launcher",
+  "3762799504": "Matchmaking",
+  "3781431317": "Volatile Weapon Mods: Rocket Launchers",
+  "3786152934": "Advanced Combat Tactics",
+  "3787716856": "Daodan Surge",
+  "3792281695": "Notswap",
+  "3799616428": "Matchmaking",
+  "3805176141": "Durandal's Edge",
+  "3809788899": "Stasis Surge",
+  "3810297122": "Strand Surge",
+  "3893690555": "Slow Capturing Zones",
+  "3899751486": "Contestants: Disciples of the Neigh",
+  "3912996116": "Randomized Banes",
+  "3921208487": "Mythic",
+  "3924377323": "Subclass Requirements",
+  "3947109118": "Dreaming Brighter",
+  "3952830384": "Crucible Scoring Enabled",
+  "3958417570": "Shielded Foes",
+  "3993408768": "Relegation Series",
+  "4007995621": "Modified Health Rules",
+  "4010968999": "Scourge II",
+  "4028333781": "Matchmaking",
+  "4047266548": "Cooperative Focus Campaign",
+  "4047923249": "Mettle",
+  "4061920580": "Solar Slide",
+  "4066301271": "Challenge Mode",
+  "4082994919": "Volatile Weapon Mods: Hand Cannons",
+  "4093484583": "Doubles Rules",
+  "4115568531": "Mission Is Timed",
+  "4162874069": "Arc Singe",
+  "4190795159": "Champion Foes",
+  "4205181439": "Matchmaking",
+  "4211958639": "Rift Rules",
+  "4229728744": "Matchmaking",
+  "4230548176": "Pestilence",
+  "4239965093": "Limited Revives",
+  "4258252763": "Relic Rules",
+  "4263658911": "Dominion Rules",
+  "4265630562": "Extinguish",
+  "4278621524": "Class Healing"
+ },
+ "ignored_modifiers": [
+  22295818,
+  40182179,
+  85104725,
+  138641527,
+  191124900,
+  197794292,
+  201968501,
+  217815700,
+  274420331,
+  501815068,
+  582228082,
+  584466411,
+  720259466,
+  732074628,
+  766975360,
+  787678752,
+  792361634,
+  1172122584,
+  1204802854,
+  1305687814,
+  1315424373,
+  1377274412,
+  1498263100,
+  1553052482,
+  1572570117,
+  1598783516,
+  1615778293,
+  1616571513,
+  1741733430,
+  1783825372,
+  1806568190,
+  1834872958,
+  1874523520,
+  2070303007,
+  2098788044,
+  2159250954,
+  2255984700,
+  2288210988,
+  2434779904,
+  2524382624,
+  2585386105,
+  2626004713,
+  2650740350,
+  2672226122,
+  2768385440,
+  2814846409,
+  2821522136,
+  2834033523,
+  2835296134,
+  2844669530,
+  2890753840,
+  2936050162,
+  2965677044,
+  3076996298,
+  3119632620,
+  3135466059,
+  3171609188,
+  3212721586,
+  3282103678,
+  3361897360,
+  3425521520,
+  3461252634,
+  3523029182,
+  3577304467,
+  3621023005,
+  3623371497,
+  3632655552,
+  3636591526,
+  3746163602,
+  3825969510,
+  3901838854,
+  4023623132,
+  4038464106,
+  4073197101,
+  4075903438,
+  4087563963,
+  4087969162,
+  4152669757,
+  4232900926
+ ],
+ "raids": {
+  "3181387331": {
+   "name": "Last Wish",
+   "master_activities": [],
+   "weapons": [
+    {
+     "name": "One Thousand Voices",
+     "type": "Fusion Rifle",
+     "exotic": true
+    },
+    {
+     "name": "Age-Old Bond",
+     "type": "Auto Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Apex Predator",
+     "type": "Rocket Launcher",
+     "exotic": false
+    },
+    {
+     "name": "Chattering Bone",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Nation of Beasts",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "Techeun Force",
+     "type": "Fusion Rifle",
+     "exotic": false
+    },
+    {
+     "name": "The Supremacy",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Transfiguration",
+     "type": "Scout Rifle",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Great Hunt",
+    "pieces": {
+     "Hunter": [
+      "Cloak of the Great Hunt",
+      "Grips of the Great Hunt",
+      "Mask of the Great Hunt",
+      "Strides of the Great Hunt",
+      "Vest of the Great Hunt"
+     ],
+     "Titan": [
+      "Gauntlets of the Great Hunt",
+      "Greaves of the Great Hunt",
+      "Helm of the Great Hunt",
+      "Mark of the Great Hunt",
+      "Plate of the Great Hunt"
+     ],
+     "Warlock": [
+      "Bond of the Great Hunt",
+      "Boots of the Great Hunt",
+      "Gloves of the Great Hunt",
+      "Hood of the Great Hunt",
+      "Robes of the Great Hunt"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Taken Barrier",
+      "description": "Grenade final blows temporarily reduce incoming damage."
+     },
+     {
+      "pieces": 4,
+      "name": "Taken Armaments",
+      "description": "Grenade final blows grant additional Heavy ammo progress."
+     }
+    ]
+   }
+  },
+  "2712317338": {
+   "name": "Garden of Salvation",
+   "master_activities": [],
+   "weapons": [
+    {
+     "name": "Accrued Redemption",
+     "type": "Combat Bow",
+     "exotic": false
+    },
+    {
+     "name": "Ancient Gospel",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "Omniscient Eye",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Prophet of Doom",
+     "type": "Shotgun",
+     "exotic": false
+    },
+    {
+     "name": "Reckless Oracle",
+     "type": "Auto Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Sacred Provenance",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Tyranny of Heaven",
+     "type": "Combat Bow",
+     "exotic": false
+    },
+    {
+     "name": "Zealot's Reward",
+     "type": "Fusion Rifle",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Kentarch 3",
+    "pieces": {
+     "Hunter": [
+      "Cloak of Temptation",
+      "Cowl of Righteousness",
+      "Grips of Exaltation",
+      "Strides of Ascendancy",
+      "Vest of Transcendence"
+     ],
+     "Titan": [
+      "Gauntlets of Exaltation",
+      "Greaves of Ascendancy",
+      "Helm of Righteousness",
+      "Plate of Transcendence",
+      "Temptation's Mark"
+     ],
+     "Warlock": [
+      "Boots of Ascendancy",
+      "Gloves of Exaltation",
+      "Mask of Righteousness",
+      "Robes of Transcendence",
+      "Temptation's Bond"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Network Admin",
+      "description": "Being near allies creates a relay network that gives the wearer improved handling and reload speed. \n\nBeing near other allied Network Admins additionally grants the wearer a bonus to Health stat."
+     },
+     {
+      "pieces": 4,
+      "name": "Network Upload",
+      "description": "Weapon final blows grant the wearer and nearby allies melee energy."
+     }
+    ]
+   }
+  },
+  "541780856": {
+   "name": "Deep Stone Crypt",
+   "master_activities": [],
+   "weapons": [
+    {
+     "name": "Eyes of Tomorrow",
+     "type": "Rocket Launcher",
+     "exotic": true
+    },
+    {
+     "name": "Bequest",
+     "type": "Sword",
+     "exotic": false
+    },
+    {
+     "name": "Commemoration",
+     "type": "Machine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Heritage",
+     "type": "Shotgun",
+     "exotic": false
+    },
+    {
+     "name": "Posterity",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "Succession",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Trustee",
+     "type": "Scout Rifle",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Legacy's Oath",
+    "pieces": {
+     "Hunter": [
+      "Legacy's Oath Cloak",
+      "Legacy's Oath Grips",
+      "Legacy's Oath Mask",
+      "Legacy's Oath Strides",
+      "Legacy's Oath Vest"
+     ],
+     "Titan": [
+      "Legacy's Oath Gauntlets",
+      "Legacy's Oath Greaves",
+      "Legacy's Oath Helm",
+      "Legacy's Oath Mark",
+      "Legacy's Oath Plate"
+     ],
+     "Warlock": [
+      "Legacy's Oath Bond",
+      "Legacy's Oath Boots",
+      "Legacy's Oath Cowl",
+      "Legacy's Oath Gloves",
+      "Legacy's Oath Robes"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Augmented Servos",
+      "description": "Powered melees release an additional disorienting pulse when used to defeat a target."
+     },
+     {
+      "pieces": 4,
+      "name": "God-like Judgment",
+      "description": "When your shields are broken by a combatant, or upon casting your Super, release a swarm of heat seeking micro-missiles."
+     }
+    ]
+   }
+  },
+  "1888320892": {
+   "name": "Vault of Glass",
+   "master_activities": [
+    1681562271,
+    3022541210
+   ],
+   "weapons": [
+    {
+     "name": "Vex Mythoclast",
+     "type": "Fusion Rifle",
+     "exotic": true
+    },
+    {
+     "name": "Corrective Measure",
+     "type": "Machine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Fatebringer",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "Found Verdict",
+     "type": "Shotgun",
+     "exotic": false
+    },
+    {
+     "name": "Hezen Vengeance",
+     "type": "Rocket Launcher",
+     "exotic": false
+    },
+    {
+     "name": "Praedyth's Revenge",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Vision of Confluence",
+     "type": "Scout Rifle",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Atheon's Memory",
+    "pieces": {
+     "Hunter": [
+      "Prime Zealot Cuirass",
+      "Prime Zealot Gloves",
+      "Prime Zealot Mask",
+      "Prime Zealot Strides",
+      "Shattered Vault Cloak"
+     ],
+     "Titan": [
+      "Kabr's Battlecage",
+      "Kabr's Brazen Grips",
+      "Kabr's Forceful Greaves",
+      "Kabr's Wrath",
+      "Light of the Great Prism"
+     ],
+     "Warlock": [
+      "Cuirass of the Hezen Lords",
+      "Facade of the Hezen Lords",
+      "Fragment of the Prime",
+      "Gloves of the Hezen Lords",
+      "Tread of the Hezen Lords"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Radiolaria Breach",
+      "description": "After picking up an Orb of Power, the next time your shields are broken, gain a bonus to Health stat for a short duration and release a burst of radiolaria around you."
+     },
+     {
+      "pieces": 4,
+      "name": "Collective Power",
+      "description": "While you have a subclass buff, dealing sustained damage creates an Orb of Power."
+     }
+    ]
+   }
+  },
+  "2136320298": {
+   "name": "Vow of the Disciple",
+   "master_activities": [
+    3889634515,
+    4217492330
+   ],
+   "weapons": [
+    {
+     "name": "Collective Obligation",
+     "type": "Pulse Rifle",
+     "exotic": true
+    },
+    {
+     "name": "Cataclysmic",
+     "type": "Linear Fusion Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Deliverance",
+     "type": "Fusion Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Forbearance",
+     "type": "Grenade Launcher",
+     "exotic": false
+    },
+    {
+     "name": "Insidious",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Lubrae's Ruin",
+     "type": "Glaive",
+     "exotic": false
+    },
+    {
+     "name": "Submission",
+     "type": "Submachine Gun",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Resonant Fury",
+    "pieces": {
+     "Hunter": [
+      "Resonant Fury Cloak",
+      "Resonant Fury Grips",
+      "Resonant Fury Mask",
+      "Resonant Fury Strides",
+      "Resonant Fury Vest"
+     ],
+     "Titan": [
+      "Resonant Fury Gauntlets",
+      "Resonant Fury Greaves",
+      "Resonant Fury Helm",
+      "Resonant Fury Mark",
+      "Resonant Fury Plate"
+     ],
+     "Warlock": [
+      "Resonant Fury Bond",
+      "Resonant Fury Boots",
+      "Resonant Fury Cowl",
+      "Resonant Fury Gloves",
+      "Resonant Fury Robes"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Resonant Plating",
+      "description": "Your health begins regenerating immediately after taking melee damage from a powerful combatant."
+     },
+     {
+      "pieces": 4,
+      "name": "Siphoning Touch",
+      "description": "Gain stacks of Siphoning Touch for weapon or Glaive melee hits. Switching weapons heals you and consumes all stacks."
+     }
+    ]
+   }
+  },
+  "292102995": {
+   "name": "King's Fall",
+   "master_activities": [
+    2964135793,
+    3257594522
+   ],
+   "weapons": [
+    {
+     "name": "Touch of Malice",
+     "type": "Scout Rifle",
+     "exotic": true
+    },
+    {
+     "name": "Defiance of Yasmin",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Doom of Chelchis",
+     "type": "Scout Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Midha's Reckoning",
+     "type": "Fusion Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Qullim's Terminus",
+     "type": "Machine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Smite of Merain",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Zaouli's Bane",
+     "type": "Hand Cannon",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Oryx's Memory",
+    "pieces": {
+     "Hunter": [
+      "Darkhollow Chiton",
+      "Darkhollow Grasps",
+      "Darkhollow Mantle",
+      "Darkhollow Mask",
+      "Darkhollow Treads"
+     ],
+     "Titan": [
+      "War Numen's Boots",
+      "War Numen's Chest",
+      "War Numen's Crown",
+      "War Numen's Fist",
+      "War Numen's Mark"
+     ],
+     "Warlock": [
+      "Bond of the Wormlore",
+      "Chasm of Yul",
+      "Grasp of Eir",
+      "Mouth of Ur",
+      "Path of Xol"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Iron Sharpens Iron",
+      "description": "Final blows on Guardians and powerful combatants generate additional ammo progress."
+     },
+     {
+      "pieces": 4,
+      "name": "Ascendant Escape",
+      "description": "After a final blow on a powerful combatant, the next time your shields are broken, you become invisible."
+     }
+    ]
+   }
+  },
+  "3699252268": {
+   "name": "Root of Nightmares",
+   "master_activities": [
+    2918919505
+   ],
+   "weapons": [
+    {
+     "name": "Conditional Finality",
+     "type": "Shotgun",
+     "exotic": true
+    },
+    {
+     "name": "Acasia's Dejection",
+     "type": "Trace Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Briar's Contempt",
+     "type": "Linear Fusion Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Koraxis's Distress",
+     "type": "Grenade Launcher",
+     "exotic": false
+    },
+    {
+     "name": "Mykel's Reverence",
+     "type": "Sidearm",
+     "exotic": false
+    },
+    {
+     "name": "Nessa's Oblation",
+     "type": "Shotgun",
+     "exotic": false
+    },
+    {
+     "name": "Rufus's Fury",
+     "type": "Auto Rifle",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Nezarec's Nightmare",
+    "pieces": {
+     "Hunter": [
+      "Boots of Trepidation",
+      "Cloak of Trepidation",
+      "Grips of Trepidation",
+      "Mask of Trepidation",
+      "Vest of Trepidation"
+     ],
+     "Titan": [
+      "Gauntlets of Agony",
+      "Greaves of Agony",
+      "Helm of Agony",
+      "Mark of Agony",
+      "Plate of Agony"
+     ],
+     "Warlock": [
+      "Bond of Detestation",
+      "Boots of Detestation",
+      "Mask of Detestation",
+      "Robes of Detestation",
+      "Wraps of Detestation"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Bad Dreams",
+      "description": "Final blows versus subclass-debuffed targets have an escalating chance to spawn an Orb of Power."
+     },
+     {
+      "pieces": 4,
+      "name": "Dream-Devourer",
+      "description": "Performing a finisher versus a powerful combatant grants Devour. While you have Devour, gain damage resistance versus combatants."
+     }
+    ]
+   }
+  },
+  "540415767": {
+   "name": "Crota's End",
+   "master_activities": [
+    1507509200
+   ],
+   "weapons": [
+    {
+     "name": "Necrochasm",
+     "type": "Auto Rifle",
+     "exotic": true
+    },
+    {
+     "name": "Abyss Defiant",
+     "type": "Auto Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Eidolon Ally",
+     "type": "Auto Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Fang of Ir Yût",
+     "type": "Scout Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Oversoul Edict",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Song of Ir Yût",
+     "type": "Machine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Swordbreaker",
+     "type": "Shotgun",
+     "exotic": false
+    },
+    {
+     "name": "Word of Crota",
+     "type": "Hand Cannon",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Crota's Memory",
+    "pieces": {
+     "Hunter": [
+      "Dogged Gage",
+      "Relentless Harness",
+      "Shroud of Flies",
+      "Tireless Striders",
+      "Unyielding Casque"
+     ],
+     "Titan": [
+      "Mark of the Pit",
+      "Willbreaker's Fists",
+      "Willbreaker's Greaves",
+      "Willbreaker's Resolve",
+      "Willbreaker's Watch"
+     ],
+     "Warlock": [
+      "Bone Circlet",
+      "Deathsinger's Gaze",
+      "Deathsinger's Grip",
+      "Deathsinger's Herald",
+      "Deathsinger's Mantle"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Cursed Fist",
+      "description": "Melee final blows trigger a Cursed Thrall explosion."
+     },
+     {
+      "pieces": 4,
+      "name": "Power of the Son",
+      "description": "Being in combat for a duration grants progressively more flinch resistance and damage resistance versus combatants."
+     }
+    ]
+   }
+  },
+  "4196566271": {
+   "name": "Salvation's Edge",
+   "master_activities": [
+    4129614942
+   ],
+   "weapons": [
+    {
+     "name": "Euphony",
+     "type": "Linear Fusion Rifle",
+     "exotic": true
+    },
+    {
+     "name": "Critical Anomaly",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Forthcoming Deviance",
+     "type": "Glaive",
+     "exotic": false
+    },
+    {
+     "name": "Imminence",
+     "type": "Submachine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Non-Denouement",
+     "type": "Combat Bow",
+     "exotic": false
+    },
+    {
+     "name": "Nullify",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Summum Bonum",
+     "type": "Sword",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Promised",
+    "pieces": {
+     "Hunter": [
+      "Promised Reign Cloak",
+      "Promised Reign Grips",
+      "Promised Reign Mask",
+      "Promised Reign Strides",
+      "Promised Reign Vest"
+     ],
+     "Titan": [
+      "Promised Reunion Gauntlets",
+      "Promised Reunion Greaves",
+      "Promised Reunion Helm",
+      "Promised Reunion Mark",
+      "Promised Reunion Plate"
+     ],
+     "Warlock": [
+      "Promised Victory Bond",
+      "Promised Victory Boots",
+      "Promised Victory Hood",
+      "Promised Victory Robes",
+      "Promised Victory Wraps"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Stable Resonance",
+      "description": "Defeating a powerful combatant generates Stable Resonance, which grants damage resistance and increased weapon damage for the duration."
+     },
+     {
+      "pieces": 4,
+      "name": "Resonance Redirection",
+      "description": "While you have Stable Resonance, continued weapon damage occasionally generates a resonance burst that damages and exhausts targets."
+     }
+    ]
+   }
+  }
+ }
+}

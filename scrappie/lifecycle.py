@@ -47,6 +47,10 @@ async def cleanup_resources():
     if queue_cleanup is not None and queue_cleanup.is_running():
         queue_cleanup.cancel()
 
+    weekly_reset = bot_state.weekly_reset_task
+    if weekly_reset is not None and weekly_reset.is_running():
+        weekly_reset.cancel()
+
     await bot_state.cleanup()
 
     logger.info("✅ Cleanup complete")
@@ -84,10 +88,19 @@ def start_discord_bot(token):
         logger.critical(f"💥 Bot startup failed: {e}", exc_info=True)
         sys.exit(1)
 
+def setup_destiny():
+    """After load_dotenv(): commands register at import, before the key is readable, so this one module registers late."""
+    if not os.getenv("BUNGIE_API_KEY"):
+        logger.info("Destiny features disabled: BUNGIE_API_KEY is not set")
+        return
+    from . import destiny
+    destiny.setup()
+
 def run():
     """`python main.py`: check the token, start Flask, then run the bot in this process."""
     load_dotenv()  # Before Process.start(): the Flask child reads PORT from the inherited environment
     token = validate_environment()
+    setup_destiny()
 
     logger.info("🚀 Starting bot with separate processes...")
 

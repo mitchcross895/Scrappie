@@ -35,6 +35,10 @@ async def on_ready():
     if queue_cleanup is not None and not queue_cleanup.is_running():
         queue_cleanup.start()
 
+    weekly_reset = bot_state.weekly_reset_task
+    if weekly_reset is not None and not weekly_reset.is_running():
+        weekly_reset.start()
+
 @bot.event
 async def on_guild_join(guild):
     logger.info(f'📥 Joined: {guild.name}')

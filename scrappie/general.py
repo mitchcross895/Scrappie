@@ -37,6 +37,13 @@ async def help_command(interaction: discord.Interaction):
             inline=False
         )
 
+    if bot.tree.get_command("item"):
+        embed.add_field(
+            name="\U0001F30C Destiny 2",
+            value="`/item <name>` - Weapon or armor lookup\n`/weekly` - Preview this week's raid post",
+            inline=False
+        )
+
     embed.set_footer(text="Use slash commands (/) to interact!")
     embed.set_thumbnail(url=bot.user.display_avatar.url)
     await interaction.response.send_message(embed=embed)

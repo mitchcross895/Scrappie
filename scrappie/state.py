@@ -17,6 +17,10 @@ class BotState:
         self.now_playing: Dict[str, Optional[str]] = {}
         self.trivia_categories: Optional[List[Dict[str, Any]]] = None
         self.queue_cleanup_task: Optional[Any] = None  # Set by music.py; stays None without voice support
+        self.weekly_reset_task: Optional[Any] = None  # Set by destiny.setup(); stays None without a key and channel
+        self.weekly_posted_reset: Optional[datetime.datetime] = None
+        self.weekly_log_reset: Optional[datetime.datetime] = None
+        self.weekly_logged: set = set()
 
     async def initialize(self):
         await self.get_http_session()

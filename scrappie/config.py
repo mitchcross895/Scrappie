@@ -11,3 +11,10 @@ class Config:
     MAX_REQUESTS_PER_MINUTE = 30
     RATE_LIMIT_CLEANUP_THRESHOLD = 10000  # Clean when this many users tracked
     QUEUE_CLEANUP_HOURS = 1  # How often to clean inactive queues
+    BUNGIE_ROOT = "https://www.bungie.net"
+    BUNGIE_API_ROOT = "https://www.bungie.net/Platform"
+    WEEKLY_RESET_WEEKDAY = 1  # Tuesday
+    WEEKLY_RESET_HOUR_UTC = 17
+    WEEKLY_CHECK_MINUTES = 10
+    WEEKLY_CATCHUP_HOURS = 24  # After this a missed post is skipped
+    WEEKLY_HISTORY_LIMIT = 100  # Messages scanned for an existing post
