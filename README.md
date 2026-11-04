@@ -13,6 +13,7 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 - **Trivia / Games**
 	- `/trivia` — Interactive trivia with category/difficulty setup and time-limited buttons.
 	- `/fact` — Return a random fact.
+	- `/dadjoke` — Return a random dad joke.
 	- `/coin` — Flip a coin (Heads/Tails).
 	- `/number <min> <max>` — Generate a random integer in the specified range.
 
@@ -27,14 +28,13 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 		- `GET /health` — Health + uptime
 
 - **Other features**
-	- Rate limiting per user (configurable via `Config.MAX_REQUESTS_PER_MINUTE`).
+	- Rate limiting per user (configurable via `Config.MAX_REQUESTS_PER_MINUTE` in `scrappie/config.py`).
 	- Logging to `logs/bot.log` and console.
 	- Optional voice support which depends on `yt-dlp`, Opus library availability and FFmpeg.
-	- Custom spellcheck words loaded from `addedwords.txt` (if present).
 
 ## Requirements
 
-- Python 3.8+ (recommend 3.10+)
+- Python 3.11+ (`yt-dlp` requires it; production runs 3.13)
 - FFmpeg installed and available on PATH (for voice playback)
 - A Discord bot token
 - See `requirements.txt` for Python dependencies.
@@ -43,7 +43,6 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 
 - `DISCORD_TOKEN` (required) — Bot token used to connect to Discord.
 - `PORT` (optional) — Port for the Flask health server (default: 5000).
-- `DEPLOYMENT` (optional) — Set to `true` in production or use `gunicorn` environment to change startup behavior.
 
 ## Quick start (development)
 
@@ -66,14 +65,26 @@ The bot will start a Flask health server on `0.0.0.0:$PORT` (default 5000) and c
 
 - Voice support requires:
 	- `yt-dlp` Python package
-	- A working Opus library (libopus) — the bot attempts to load common library names
+	- A working Opus library (libopus) — the bot tries common library names, then discord.py's default; on Windows that is the DLL bundled with discord.py
 	- FFmpeg available on PATH
-- If any of the above are missing, music commands will be disabled and the bot logs a warning.
+- If `yt-dlp` or Opus is unavailable, music commands are not registered and the bot logs why. If FFmpeg is missing, playback fails at runtime.
 
 ## Files of interest
 
-- `main.py` — Bot entrypoint and all command/event logic.
+- `main.py` — Entry point. Starts Flask and the bot; imported as a module it only exposes the WSGI `application`.
+- `scrappie/` — Application package:
+	- `config.py` — Tunable values and API URLs.
+	- `log.py` — Logging setup.
+	- `web.py` — Flask health server.
+	- `state.py` — Shared runtime state and rate limit tracking.
+	- `bot.py` — The Discord bot object.
+	- `utils.py` — Embed, HTTP, formatting and rate limit helpers.
+	- `voice.py` — Opus and yt-dlp availability.
+	- `music.py`, `trivia.py`, `weather.py`, `general.py` — Slash commands.
+	- `events.py` — Discord events and the status rotation task.
+	- `lifecycle.py` — Command registration order, startup and shutdown.
 - `requirements.txt` — Python dependencies.
+- `nixpacks.toml` and `Procfile` — Production start command (`python main.py`).
 - `logs/` — Directory created at runtime containing `bot.log`.
 
 ## Troubleshooting
@@ -84,4 +95,4 @@ The bot will start a Flask health server on `0.0.0.0:$PORT` (default 5000) and c
 
 ## Contributing
 
-Pull requests welcome. Keep changes focused and run linters/tests before submitting.
+Pull requests welcome. Keep changes focused. There are no tests or linters; at minimum check that `python -m compileall -q main.py scrappie` passes.

@@ -1,0 +1,1 @@
+"""Scrappie Discord bot package."""

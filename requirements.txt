@@ -7,5 +7,3 @@ python-weather>=2.0.0
 randfacts>=0.20.0
 Flask>=3.0.0
 python-dotenv>=1.0.0
-Flask>=3.0.0
-python-dotenv>=1.0.0

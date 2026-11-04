@@ -9,3 +9,6 @@ __pycache__/
 *.log
 
 input/*xlsx
+
+# Claude Code
+CLAUDE.md
