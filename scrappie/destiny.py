@@ -1,4 +1,4 @@
-"""Destiny 2 weekly raid post, /weekly and /item. Only lifecycle.py imports this, and only when BUNGIE_API_KEY is set."""
+"""Destiny 2 weekly raid and dungeon post, /weekly and /item. Only lifecycle.py imports this, and only when BUNGIE_API_KEY is set."""
 import datetime
 import json
 import os
@@ -27,6 +27,19 @@ DAMAGE_TYPES = {1: "Kinetic", 2: "Arc", 3: "Solar", 4: "Void", 6: "Stasis", 7: "
 ROTATION_GAP = 4  # The two weekly slots sit this many places apart on the rotation list
 MAX_CHOICES = 25
 MAX_CHOICE_LENGTH = 100
+UNCONFIRMED_MODIFIERS = "**Modifiers:** Shown once Bungie confirms this dungeon"
+OMITTED_PIECES = "Use /item to look up each piece."
+PREDICTED_NOTE = "Predicted from the community rotation pattern, not confirmed by Bungie."
+DUNGEON_LOGS = {
+    "no_account": "dungeon account not configured, using predicted dungeons",
+    "call_failed": "couldn't read the dungeon account, using predicted dungeons",
+    "no_data": "no character activity data (check account privacy), using predicted dungeons",
+    "empty": "no dungeon challenges on any character, using predicted dungeons",
+    "partial": "only one dungeon visible, using predicted dungeons",
+    "cached": "profile data predates the reset, using predicted dungeons",
+    "stale": "live dungeons match last week's expected pair, using predicted dungeons",
+    "disagree": "live dungeons differ from the cycle, live wins; check DUNGEON_CYCLE",
+}
 
 class ItemEntry(NamedTuple):
     key: str  # Normalised name
@@ -51,16 +64,18 @@ def items_by_hash() -> dict:
 
 # ---- Bungie API ----
 
-async def bungie_get(path: str) -> Optional[dict]:
-    """GET a Platform path and return its Response, or None. Paths are fixed strings plus integer hashes."""
+async def bungie_get(path: str, quiet: bool = False) -> Optional[dict]:
+    """GET a Platform path and return its Response, or None. Paths are fixed strings plus integers.
+    quiet logs nothing: profile paths hold the membership ID, so the caller logs a fixed message."""
     key = os.getenv("BUNGIE_API_KEY")
     if not key:
         return None
-    data = await safe_api_request(Config.BUNGIE_API_ROOT + path, headers={"X-API-Key": key}, allow_redirects=False)
+    data = await safe_api_request(Config.BUNGIE_API_ROOT + path, headers={"X-API-Key": key}, allow_redirects=False, quiet=quiet)
     if not data:
-        return None  # safe_api_request logged it
+        return None  # safe_api_request logged it unless quiet
     if data.get("ErrorCode") != 1 or "Response" not in data:
-        logger.warning(f"Bungie {path} failed: ErrorCode {data.get('ErrorCode')} {data.get('ErrorStatus')}")
+        if not quiet:
+            logger.warning(f"Bungie {path} failed: ErrorCode {data.get('ErrorCode')} {data.get('ErrorStatus')}")
         return None
     return data["Response"]
 
@@ -147,23 +162,23 @@ def _weapon_text(weapons: List[dict]) -> str:
         f"**{w['name']}** (Exotic {w['type']})" if w["exotic"] else f"{w['name']} ({w['type']})" for w in weapons
     )
 
+def _activity_fields(title: str, modifiers: str, weapons: str, armor: dict) -> List[tuple]:
+    pieces = "\n".join(f"**{cls}:** {', '.join(names)}" for cls, names in armor["pieces"].items())
+    bonuses = "\n".join(f"**{b['pieces']}-piece, {b['name']}:** {b['description']}" for b in armor["bonuses"])
+    return [(title, modifiers), ("Weapons", weapons), (f"Armor: {armor['name']}", pieces), ("Set bonuses", bonuses)]
+
 def weekly_spec(featured: List[dict], start: datetime.datetime, forecast: Optional[List[str]], footer: str) -> dict:
     """Plain data for one embed. Fields stay under Discord's limits; the worst pair is under 3,000 characters."""
     next_reset = start + datetime.timedelta(days=7)
     fields = []
     for entry in featured:
-        raid, armor = entry["raid"], entry["raid"]["armor_set"]
-        pieces = "\n".join(f"**{cls}:** {', '.join(names)}" for cls, names in armor["pieces"].items())
-        bonuses = "\n".join(f"**{b['pieces']}-piece, {b['name']}:** {b['description']}" for b in armor["bonuses"])
-        fields.append((raid["name"], _modifier_text(entry)))
-        fields.append(("Weapons", _weapon_text(raid["weapons"])))
-        fields.append((f"Armor: {armor['name']}", pieces))
-        fields.append(("Set bonuses", bonuses))
+        raid = entry["raid"]
+        fields.extend(_activity_fields(raid["name"], _modifier_text(entry), _weapon_text(raid["weapons"]), raid["armor_set"]))
     if forecast:
-        fields.append(("Next week (predicted)", f"{' and '.join(forecast)}. Predicted from the community rotation pattern, not confirmed by Bungie."))
+        fields.append(("Next week's raids (predicted)", f"{' and '.join(forecast)}. {PREDICTED_NOTE}"))
     return {
         "title": "Destiny 2 Weekly Reset",
-        "description": f"Featured raids from <t:{int(start.timestamp())}:F>. Next reset <t:{int(next_reset.timestamp())}:R>.",
+        "description": f"Featured activities from <t:{int(start.timestamp())}:F>. Next reset <t:{int(next_reset.timestamp())}:R>.",
         "fields": [(clip(name, 256), clip(value, 1024)) for name, value in fields],
         "footer": clip(footer, 2048),
     }
@@ -176,6 +191,104 @@ def weekly_from_milestones(milestones: dict, footer: str, reset: Optional[dateti
         return None
     start = reset or featured[0]["start"] or latest_reset(datetime.datetime.now(timezone.utc))
     return weekly_spec(featured, start, forecast_next([f["raid"]["name"] for f in featured], data["rotation"]), footer)
+
+# ---- Pure logic: dungeons ----
+
+def cycle_pair(reset: datetime.datetime, data: dict, offset: int = 0) -> List[str]:
+    """The pair for a reset by whole weeks from the anchor, in UTC. Offsets give the weeks either side."""
+    weeks = (reset - parse_time(data["dungeon_cycle_anchor"])) // datetime.timedelta(days=7)
+    return data["dungeon_cycle"][(weeks + offset) % len(data["dungeon_cycle"])]
+
+def live_dungeons(profile: Optional[dict], data: dict) -> dict:
+    """Dungeon name to modifiers, across all characters: one that has played can lose its challenges."""
+    characters = ((profile or {}).get("characterActivities") or {}).get("data") or {}
+    found = {}
+    for character in characters.values():
+        for activity in character.get("availableActivities") or []:
+            names = {data["dungeon_objectives"].get(str((c.get("objective") or {}).get("objectiveHash")))
+                     for c in activity.get("challenges") or []} - {None}
+            for name in names:
+                entry = found.setdefault(name, {"standard": [], "master": [], "has_master": False, "unknown": 0})
+                labels, missing = clean_modifiers(activity.get("modifierHashes") or [], data)
+                is_master = activity.get("activityHash") in data["dungeons"][name]["master_activities"]
+                entry["unknown"] = max(entry["unknown"], missing)
+                entry["has_master"] = entry["has_master"] or is_master
+                target = entry["master"] if is_master else entry["standard"]
+                target.extend(n for n in labels if n not in target)
+    for entry in found.values():
+        entry["master"] = [n for n in entry["master"] if n not in entry["standard"]]
+    return found
+
+def dungeon_section(profile: Optional[dict], reset: datetime.datetime, data: dict, settled: bool) -> dict:
+    """This week's dungeons. settled means the wait is over, so a section that isn't confirmed can still post."""
+    expected = cycle_pair(reset, data)
+    live = live_dungeons(profile, data)
+    minted = parse_time((profile or {}).get("responseMintedTimestamp"))
+    if profile is None:
+        reason = "call_failed"
+    elif not (profile.get("characterActivities") or {}).get("data"):
+        reason = "no_data"
+    elif not live:
+        reason = "empty"
+    elif len(live) < 2:
+        reason = "partial"
+    elif minted is None or minted < reset:
+        reason = "cached"
+    elif set(live) == set(expected):
+        reason = None
+    elif set(live) == set(cycle_pair(reset, data, -1)):
+        reason = "stale"
+    else:
+        reason = "disagree"
+    ready = reason is None or settled
+    if reason is None or (reason == "disagree" and settled):
+        names = [n for n in data["dungeons"] if n in live]
+        cycle = data["dungeon_cycle"]
+        index = next((i for i, pair in enumerate(cycle) if set(pair) == set(names)), None)
+        forecast = None if index is None else cycle[(index + 1) % len(cycle)]
+        return {"status": "confirmed", "names": names, "entries": live, "forecast": forecast, "ready": ready, "reason": reason}
+    return {"status": "predicted", "names": expected, "entries": {}, "forecast": cycle_pair(reset, data, 1), "ready": ready, "reason": reason}
+
+def _dungeon_weapon_text(weapons: List[dict]) -> str:
+    if not weapons:
+        return "None credited to this dungeon in Bungie's data."
+    text = _weapon_text(weapons)
+    return text if len(weapons) > 1 else f"{text}. Bungie's data credits no other weapons to this dungeon."
+
+def embed_length(spec: dict) -> int:
+    return len(spec["title"]) + len(spec["description"]) + len(spec.get("footer") or "") + sum(len(n) + len(v) for n, v in spec["fields"])
+
+def fit_embed(spec: dict, first_dungeon_field: int) -> dict:
+    """Keep one message under the limit: dungeon piece names go first, then fields from the end."""
+    fields = list(spec["fields"])
+    fitted = {**spec, "fields": fields}
+    for index in range(first_dungeon_field, len(fields)):
+        if embed_length(fitted) <= Config.WEEKLY_EMBED_LIMIT:
+            return fitted
+        if fields[index][0].startswith("Armor: "):
+            fields[index] = (fields[index][0], OMITTED_PIECES)
+    while embed_length(fitted) > Config.WEEKLY_EMBED_LIMIT:
+        fields.pop()
+    return fitted
+
+def add_dungeons(spec: dict, section: Optional[dict]) -> dict:
+    """Append the dungeon fields to a raid spec. None leaves the raid post as it is."""
+    if section is None:
+        return spec
+    data = load_raids()
+    predicted = section["status"] == "predicted"
+    fields = []
+    for name in section["names"]:
+        dungeon = data["dungeons"][name]
+        title = f"Dungeon: {name} (predicted)" if predicted else f"Dungeon: {name}"
+        modifiers = UNCONFIRMED_MODIFIERS if predicted else _modifier_text(section["entries"][name])
+        fields.extend(_activity_fields(title, modifiers, _dungeon_weapon_text(dungeon["weapons"]), dungeon["armor_set"]))
+    if section["forecast"]:
+        fields.append(("Next week's dungeons (predicted)", f"{' and '.join(section['forecast'])}. {PREDICTED_NOTE}"))
+    note = f"\nThis week's dungeons: {PREDICTED_NOTE}" if predicted else ""
+    updated = {**spec, "description": spec["description"] + note,
+               "fields": spec["fields"] + [(clip(n, 256), clip(v, 1024)) for n, v in fields]}
+    return fit_embed(updated, len(spec["fields"]))
 
 # ---- Pure logic: items ----
 
@@ -282,12 +395,17 @@ async def item_command(interaction: discord.Interaction, name: str):
     perk = await bungie_get(f"/Destiny2/Manifest/DestinyInventoryItemDefinition/{perk_hash}/") if perk_hash else None
     await interaction.followup.send(embed=build_embed(item_spec(item, perk, len(entry.hashes) - 1)))
 
-@app_commands.command(name="weekly", description="Preview this week's Destiny 2 raid post (only you see it).")
+@app_commands.command(name="weekly", description="Preview this week's Destiny 2 raid and dungeon post (only you see it).")
 @rate_limit
 async def weekly_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     milestones = await bungie_get("/Destiny2/Milestones/")
     spec = weekly_from_milestones(milestones, "Preview of the weekly post") if milestones else None
+    if spec:
+        now = datetime.datetime.now(timezone.utc)
+        reset = latest_reset(now)
+        settled = now - reset >= datetime.timedelta(minutes=Config.WEEKLY_DUNGEON_WAIT_MINUTES)
+        spec = add_dungeons(spec, await get_dungeons(reset, settled))
     embed = build_embed(spec) if spec else error_embed("Couldn't get this week's raids. Try again later.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -299,6 +417,37 @@ def log_once(reset: datetime.datetime, reason: str, message: str) -> None:
     if reason not in bot_state.weekly_logged:
         bot_state.weekly_logged.add(reason)
         logger.warning(f"Weekly post: {message}")
+
+def profile_path() -> Optional[str]:
+    """Read at call time, like the key. Digits only, so the path stays a fixed string plus integers."""
+    kind = (os.getenv("DESTINY_MEMBERSHIP_TYPE") or "").strip()
+    member = (os.getenv("DESTINY_MEMBERSHIP_ID") or "").strip()
+    return f"/Destiny2/{kind}/Profile/{member}/?components=204" if kind.isdecimal() and member.isdecimal() else None
+
+async def get_dungeons(reset: datetime.datetime, settled: bool) -> Optional[dict]:
+    """Never raises and never logs the path. None means raids only."""
+    path = profile_path()
+    profile = await bungie_get(path, quiet=True) if path else None
+    try:
+        section = dungeon_section(profile, reset, load_raids(), settled or path is None)
+    except Exception as e:  # Unexpected shape or old data must not stop the raid post
+        log_once(reset, "dungeon_error", f"dungeon section failed ({type(e).__name__}), posting raids only")
+        return None
+    if section["ready"]:
+        reason = section["reason"] if path else "no_account"
+        if reason:
+            log_once(reset, f"dungeon_{reason}", DUNGEON_LOGS[reason])
+        if any(e["unknown"] for e in section["entries"].values()):
+            log_once(reset, "dungeon_modifiers", "dungeon modifier(s) not in raids.json; regenerate the Destiny data")
+    return section
+
+def dungeon_wait_over(now: datetime.datetime, reset: datetime.datetime) -> bool:
+    """The wait starts the first time raids are fresh, and can't run past the catch-up window."""
+    if not bot_state.weekly_raids_ready or bot_state.weekly_raids_ready[0] != reset:
+        bot_state.weekly_raids_ready = (reset, now)
+    wait_end = bot_state.weekly_raids_ready[1] + datetime.timedelta(minutes=Config.WEEKLY_DUNGEON_WAIT_MINUTES)
+    last_tick = reset + datetime.timedelta(hours=Config.WEEKLY_CATCHUP_HOURS, minutes=-2 * Config.WEEKLY_CHECK_MINUTES)
+    return now >= min(wait_end, last_tick)
 
 def channel_id() -> Optional[int]:
     value = (os.getenv("WEEKLY_RESET_CHANNEL_ID") or "").strip()
@@ -347,13 +496,17 @@ async def run_weekly_check(now: datetime.datetime) -> None:
     if spec is None:
         log_once(reset, "not_ready", "Bungie data not ready for this reset, will retry")
         return
+    section = await get_dungeons(reset, dungeon_wait_over(now, reset))
+    if section is not None and not section["ready"]:
+        return  # A later tick retries; dungeon_wait_over bounds this
+    spec = add_dungeons(spec, section)
     try:
         await channel.send(embed=build_embed(spec))
     except discord.HTTPException as e:
         log_once(reset, "send", f"send failed: {e}")
         return
     bot_state.weekly_posted_reset = reset
-    logger.info(f"Weekly post sent for {reset:%Y-%m-%d}")
+    logger.info(f"Weekly post sent for {reset:%Y-%m-%d} (dungeons: {section['status'] if section else 'omitted'})")
 
 @tasks.loop(minutes=Config.WEEKLY_CHECK_MINUTES)
 async def weekly_reset_loop():
@@ -370,6 +523,8 @@ def setup() -> None:
     if bot.tree.get_command("item") is None:
         bot.tree.add_command(item_command)
         bot.tree.add_command(weekly_command)
+    if profile_path() is None:
+        logger.info("Live dungeon data disabled: DESTINY_MEMBERSHIP_TYPE or DESTINY_MEMBERSHIP_ID is unset, dungeons will be predicted")
     if channel_id() is None:
         logger.info("Weekly Destiny post disabled: WEEKLY_RESET_CHANNEL_ID is unset or not a number")
         return

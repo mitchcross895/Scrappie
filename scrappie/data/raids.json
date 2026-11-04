@@ -1119,5 +1119,782 @@
     ]
    }
   }
+ },
+ "dungeon_cycle_anchor": "2026-11-03T17:00:00Z",
+ "dungeon_cycle": [
+  [
+   "Pit of Heresy",
+   "Spire of the Watcher"
+  ],
+  [
+   "Prophecy",
+   "Ghosts of the Deep"
+  ],
+  [
+   "Grasp of Avarice",
+   "Warlord's Ruin"
+  ],
+  [
+   "Duality",
+   "Vesper's Host"
+  ],
+  [
+   "Spire of the Watcher",
+   "Sundered Doctrine"
+  ],
+  [
+   "Ghosts of the Deep",
+   "The Shattered Throne"
+  ],
+  [
+   "Warlord's Ruin",
+   "Pit of Heresy"
+  ],
+  [
+   "Prophecy",
+   "Vesper's Host"
+  ],
+  [
+   "Grasp of Avarice",
+   "Sundered Doctrine"
+  ],
+  [
+   "Duality",
+   "The Shattered Throne"
+  ]
+ ],
+ "dungeon_objectives": {
+  "1062014463": "Warlord's Ruin",
+  "1283234589": "Pit of Heresy",
+  "1288508599": "Grasp of Avarice",
+  "2039792527": "Prophecy",
+  "2367956143": "Vesper's Host",
+  "2697564403": "Ghosts of the Deep",
+  "3039545165": "Duality",
+  "3211393925": "Spire of the Watcher",
+  "3233272263": "Sundered Doctrine",
+  "3838169295": "The Shattered Throne"
+ },
+ "dungeons": {
+  "The Shattered Throne": {
+   "master_activities": [],
+   "weapons": [],
+   "armor_set": {
+    "name": "Techeun's Regalia",
+    "pieces": {
+     "Hunter": [
+      "Techeun's Regalia Cloak",
+      "Techeun's Regalia Grips",
+      "Techeun's Regalia Mask",
+      "Techeun's Regalia Strides",
+      "Techeun's Regalia Vest"
+     ],
+     "Titan": [
+      "Techeun's Regalia Gauntlets",
+      "Techeun's Regalia Greaves",
+      "Techeun's Regalia Helmet",
+      "Techeun's Regalia Mark",
+      "Techeun's Regalia Plate"
+     ],
+     "Warlock": [
+      "Techeun's Regalia Bond",
+      "Techeun's Regalia Boots",
+      "Techeun's Regalia Gloves",
+      "Techeun's Regalia Hood",
+      "Techeun's Regalia Robes"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Queensfoil Rush",
+      "description": "Gain a powerful overshield while performing your finisher. When you finish a target, release a slowing burst around you."
+     },
+     {
+      "pieces": 4,
+      "name": "Truth to Power",
+      "description": "Gain increasing damage resistance when you deal damage or land final blows. Finishers grant accelerated progress. At max stacks, the recharge rate of your abilities is also increased."
+     }
+    ]
+   }
+  },
+  "Pit of Heresy": {
+   "master_activities": [
+    785700673,
+    2559374374,
+    2559374375
+   ],
+   "weapons": [
+    {
+     "name": "Premonition",
+     "type": "Pulse Rifle",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Apostate's Blade",
+    "pieces": {
+     "Hunter": [
+      "Apostate's Blade Cloak",
+      "Apostate's Blade Grips",
+      "Apostate's Blade Mask",
+      "Apostate's Blade Strides",
+      "Apostate's Blade Vest"
+     ],
+     "Titan": [
+      "Apostate's Blade Gauntlets",
+      "Apostate's Blade Greaves",
+      "Apostate's Blade Helm",
+      "Apostate's Blade Mark",
+      "Apostate's Blade Plate"
+     ],
+     "Warlock": [
+      "Apostate's Blade Bond",
+      "Apostate's Blade Boots",
+      "Apostate's Blade Gloves",
+      "Apostate's Blade Hood",
+      "Apostate's Blade Robe"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Regenerative Threshold",
+      "description": "Performing a finisher stores power. The next time your shields are broken, consume stored power to immediately heal and start health regeneration."
+     },
+     {
+      "pieces": 4,
+      "name": "Melee Conduction",
+      "description": "While you have Radiant, Restoration, or Cure, your melee hits release a burst that will scorch the target."
+     }
+    ]
+   }
+  },
+  "Prophecy": {
+   "master_activities": [],
+   "weapons": [
+    {
+     "name": "A Sudden Death",
+     "type": "Shotgun",
+     "exotic": false
+    },
+    {
+     "name": "A Swift Verdict",
+     "type": "Sidearm",
+     "exotic": false
+    },
+    {
+     "name": "Adjudicator",
+     "type": "Submachine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Darkest Before",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Death Adder",
+     "type": "Submachine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Hoosegow",
+     "type": "Rocket Launcher",
+     "exotic": false
+    },
+    {
+     "name": "IKELOS_HC_v1.0.2",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "IKELOS_SG_v1.0.2",
+     "type": "Shotgun",
+     "exotic": false
+    },
+    {
+     "name": "Judgment",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "Negative Space",
+     "type": "Sword",
+     "exotic": false
+    },
+    {
+     "name": "Prosecutor",
+     "type": "Auto Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Relentless",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "The Last Breath",
+     "type": "Auto Rifle",
+     "exotic": false
+    },
+    {
+     "name": "The Long Walk",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Widow's Bite",
+     "type": "Sniper Rifle",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "CODA",
+    "pieces": {
+     "Hunter": [
+      "Cloak Judgment (CODA)",
+      "Flowing Boots (CODA)",
+      "Flowing Cowl (CODA)",
+      "Flowing Grips (CODA)",
+      "Flowing Vest (CODA)"
+     ],
+     "Titan": [
+      "Crushing Greaves (CODA)",
+      "Crushing Guard (CODA)",
+      "Crushing Helm (CODA)",
+      "Crushing Plate (CODA)",
+      "Mark Judgment (CODA)"
+     ],
+     "Warlock": [
+      "Bond Judgment (CODA)",
+      "Channeling Cowl (CODA)",
+      "Channeling Robes (CODA)",
+      "Channeling Treads (CODA)",
+      "Channeling Wraps (CODA)"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Between Poles",
+      "description": "Final blows with Light weapons grants stacks of Light Polarity, which grants Grenade stat. Final blows with Darkness or Kinetic weapons grants stacks of Dark Polarity, which grants stacks of Melee stat."
+     },
+     {
+      "pieces": 4,
+      "name": "So Very Thin",
+      "description": "Final blows with Light weapons grants additional grenade energy. Final blows with Dark or Kinetic weapons grants additional melee energy. Rapid final blows that alternate between Light and Darkness grant a short period of damage resistance."
+     }
+    ]
+   }
+  },
+  "Grasp of Avarice": {
+   "master_activities": [
+    1112917203,
+    3774021532
+   ],
+   "weapons": [
+    {
+     "name": "1000 Yard Stare",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Eyasluna",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "Hero of Ages",
+     "type": "Sword",
+     "exotic": false
+    },
+    {
+     "name": "Matador 64",
+     "type": "Shotgun",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Yearning Echo",
+    "pieces": {
+     "Hunter": [
+      "Twisting Echo Cloak",
+      "Twisting Echo Grips",
+      "Twisting Echo Mask",
+      "Twisting Echo Strides",
+      "Twisting Echo Vest"
+     ],
+     "Titan": [
+      "Descending Echo Cage",
+      "Descending Echo Gauntlets",
+      "Descending Echo Greaves",
+      "Descending Echo Helm",
+      "Descending Echo Mark"
+     ],
+     "Warlock": [
+      "Corrupting Echo Bond",
+      "Corrupting Echo Boots",
+      "Corrupting Echo Cover",
+      "Corrupting Echo Gloves",
+      "Corrupting Echo Robes"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Untold Greed",
+      "description": "Picking up ammo, Orbs of Power, Elemental pickups, or destroying a Strand Tangle grants stacks of Untold Greed, slightly reducing damage taken and providing reload speed to equipped weapons. When your shields are broken, some stacks are lost."
+     },
+     {
+      "pieces": 4,
+      "name": "Overflowing Coffers",
+      "description": "While you have stacks of Untold Greed, Orbs of Power and Elemental pickups provide more of their respective energy, and Strand Tangles deal increased damage. When your shields are broken, all stacks are converted into a fountain of Orbs of Power."
+     }
+    ]
+   }
+  },
+  "Duality": {
+   "master_activities": [
+    1668217731,
+    3012587626
+   ],
+   "weapons": [
+    {
+     "name": "Heartshadow",
+     "type": "Sword",
+     "exotic": true
+    },
+    {
+     "name": "Fixed Odds",
+     "type": "Machine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Lingering Dread",
+     "type": "Grenade Launcher",
+     "exotic": false
+    },
+    {
+     "name": "New Purpose",
+     "type": "Pulse Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Stormchaser",
+     "type": "Linear Fusion Rifle",
+     "exotic": false
+    },
+    {
+     "name": "The Epicurean",
+     "type": "Fusion Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Unforgiven",
+     "type": "Submachine Gun",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Deep Explorer",
+    "pieces": {
+     "Hunter": [
+      "Deep Explorer Cloak",
+      "Deep Explorer Grasps",
+      "Deep Explorer Mask",
+      "Deep Explorer Strides",
+      "Deep Explorer Vest"
+     ],
+     "Titan": [
+      "Deep Explorer Gauntlets",
+      "Deep Explorer Greaves",
+      "Deep Explorer Helmet",
+      "Deep Explorer Mark",
+      "Deep Explorer Plate"
+     ],
+     "Warlock": [
+      "Deep Explorer Bond",
+      "Deep Explorer Boots",
+      "Deep Explorer Gloves",
+      "Deep Explorer Hood",
+      "Deep Explorer Vestments"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Built Bitter",
+      "description": "Taking damage increases the reload speed of your equipped weapon until it is stowed. Taking more damage increases the effect."
+     },
+     {
+      "pieces": 4,
+      "name": "Bittersweet",
+      "description": "When you stow a weapon, restore health based on the number of Built Bitter stacks lost."
+     }
+    ]
+   }
+  },
+  "Spire of the Watcher": {
+   "master_activities": [
+    1801496203,
+    2296818662
+   ],
+   "weapons": [
+    {
+     "name": "Hierarchy of Needs",
+     "type": "Combat Bow",
+     "exotic": true
+    },
+    {
+     "name": "Liminal Vigil",
+     "type": "Sidearm",
+     "exotic": false
+    },
+    {
+     "name": "Long Arm",
+     "type": "Scout Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Seventh Seraph Carbine",
+     "type": "Auto Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Seventh Seraph Officer Revolver",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "Terminus Horizon",
+     "type": "Machine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Wilderflight",
+     "type": "Grenade Launcher",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "TM Custom",
+    "pieces": {
+     "Hunter": [
+      "TM-Earp Custom Chaps",
+      "TM-Earp Custom Cloaked Stetson",
+      "TM-Earp Custom Grips",
+      "TM-Earp Custom Hood",
+      "TM-Earp Custom Vest"
+     ],
+     "Titan": [
+      "TM-Cogburn Custom Cover",
+      "TM-Cogburn Custom Gauntlets",
+      "TM-Cogburn Custom Legguards",
+      "TM-Cogburn Custom Mark",
+      "TM-Cogburn Custom Plate"
+     ],
+     "Warlock": [
+      "TM-Moss Custom Bond",
+      "TM-Moss Custom Duster",
+      "TM-Moss Custom Gloves",
+      "TM-Moss Custom Hat",
+      "TM-Moss Custom Pants"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Old Martian Diplomacy",
+      "description": "Stowing a weapon after defeating a powerful combatant or a Guardian heals you a small amount and disorients nearby combatants."
+     },
+     {
+      "pieces": 4,
+      "name": "High Noon",
+      "description": "Freshly drawn weapons deal increased precision damage to combatants for a short period. Weapons with the Tex Balanced Stock Origin Trait equipped or Exotics manufactured by the Tex Mechanica Foundry gain further increased benefits."
+     }
+    ]
+   }
+  },
+  "Ghosts of the Deep": {
+   "master_activities": [
+    2716998124
+   ],
+   "weapons": [
+    {
+     "name": "The Navigator",
+     "type": "Trace Rifle",
+     "exotic": true
+    },
+    {
+     "name": "Cold Comfort",
+     "type": "Rocket Launcher",
+     "exotic": false
+    },
+    {
+     "name": "Greasy Luck",
+     "type": "Glaive",
+     "exotic": false
+    },
+    {
+     "name": "New Pacific Epitaph",
+     "type": "Grenade Launcher",
+     "exotic": false
+    },
+    {
+     "name": "No Survivors",
+     "type": "Submachine Gun",
+     "exotic": false
+    },
+    {
+     "name": "Rapacious Appetite",
+     "type": "Submachine Gun",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Taken King",
+    "pieces": {
+     "Hunter": [
+      "Cloak of the Taken King",
+      "Grasps of the Taken King",
+      "Mask of the Taken King",
+      "Strides of the Taken King",
+      "Vest of the Taken King"
+     ],
+     "Titan": [
+      "Gauntlets of the Taken King",
+      "Greaves of the Taken King",
+      "Helm of the Taken King",
+      "Mark of the Taken King",
+      "Plate of the Taken King"
+     ],
+     "Warlock": [
+      "Bond of the Taken King",
+      "Boots of the Taken King",
+      "Gloves of the Taken King",
+      "Hood of the Taken King",
+      "Vestment of the Taken King"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "The Ceremony",
+      "description": "Finishing combatants or reviving allies initiates a Lucent Hive ritual. While the ritual is active, gain increased Super stat."
+     },
+     {
+      "pieces": 4,
+      "name": "Lucent Swarm",
+      "description": "Collecting Orbs of Power extends the Ceremony. While it is active, ability final blows occasionally spawn allied Arc moths."
+     }
+    ]
+   }
+  },
+  "Warlord's Ruin": {
+   "master_activities": [
+    2534833093
+   ],
+   "weapons": [
+    {
+     "name": "Buried Bloodline",
+     "type": "Sidearm",
+     "exotic": true
+    },
+    {
+     "name": "Dragoncult Sickle",
+     "type": "Sword",
+     "exotic": false
+    },
+    {
+     "name": "Indebted Kindness",
+     "type": "Sidearm",
+     "exotic": false
+    },
+    {
+     "name": "Naeem's Lance",
+     "type": "Sniper Rifle",
+     "exotic": false
+    },
+    {
+     "name": "Vengeful Whisper",
+     "type": "Combat Bow",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Dark Age",
+    "pieces": {
+     "Hunter": [
+      "Dark Age Cloak",
+      "Dark Age Grips",
+      "Dark Age Harness",
+      "Dark Age Mask",
+      "Dark Age Strides"
+     ],
+     "Titan": [
+      "Dark Age Chestrig",
+      "Dark Age Gauntlets",
+      "Dark Age Helm",
+      "Dark Age Mark",
+      "Dark Age Sabatons"
+     ],
+     "Warlock": [
+      "Dark Age Bond",
+      "Dark Age Gloves",
+      "Dark Age Legbraces",
+      "Dark Age Overcoat",
+      "Dark Age Visor"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Taking Initiative",
+      "description": "Hitting combatants with melee attacks or Sword strikes grants a stack of Initiative, giving bonus handling and reload. Stacks decay slowly over time."
+     },
+     {
+      "pieces": 4,
+      "name": "Healing Initiative",
+      "description": "While you have Initiative, using your class ability creates a stationary healing aura. The aura gains increased healing based on the number of Initiative stacks."
+     }
+    ]
+   }
+  },
+  "Vesper's Host": {
+   "master_activities": [
+    4293676253
+   ],
+   "weapons": [
+    {
+     "name": "Ice Breaker",
+     "type": "Sniper Rifle",
+     "exotic": true
+    },
+    {
+     "name": "VS Chill Inhibitor",
+     "type": "Grenade Launcher",
+     "exotic": false
+    },
+    {
+     "name": "VS Gravitic Arrest",
+     "type": "Fusion Rifle",
+     "exotic": false
+    },
+    {
+     "name": "VS Pyroelectric Propellant",
+     "type": "Auto Rifle",
+     "exotic": false
+    },
+    {
+     "name": "VS Velocity Baton",
+     "type": "Grenade Launcher",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Spacewalk",
+    "pieces": {
+     "Hunter": [
+      "Spacewalk Cloak",
+      "Spacewalk Cowl",
+      "Spacewalk Grasps",
+      "Spacewalk Strides",
+      "Spacewalk Vest"
+     ],
+     "Titan": [
+      "Spacewalk Gauntlets",
+      "Spacewalk Greaves",
+      "Spacewalk Helm",
+      "Spacewalk Mark",
+      "Spacewalk Plate"
+     ],
+     "Warlock": [
+      "Spacewalk Bond",
+      "Spacewalk Boots",
+      "Spacewalk Cover",
+      "Spacewalk Gloves",
+      "Spacewalk Robes"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Augmented Armaments",
+      "description": "Primary ammo weapons deal increased damage to disoriented combatants."
+     },
+     {
+      "pieces": 4,
+      "name": "Augmented Explosives",
+      "description": "Your grenade abilities release an additional disorienting pulse shortly after detonating."
+     }
+    ]
+   }
+  },
+  "Sundered Doctrine": {
+   "master_activities": [
+    3521648250
+   ],
+   "weapons": [
+    {
+     "name": "Finality's Auger",
+     "type": "Linear Fusion Rifle",
+     "exotic": true
+    },
+    {
+     "name": "Unloved",
+     "type": "Hand Cannon",
+     "exotic": false
+    },
+    {
+     "name": "Unvoiced",
+     "type": "Shotgun",
+     "exotic": false
+    },
+    {
+     "name": "Unworthy",
+     "type": "Scout Rifle",
+     "exotic": false
+    }
+   ],
+   "armor_set": {
+    "name": "Flain",
+    "pieces": {
+     "Hunter": [
+      "Grasps of the Flain",
+      "Hooks of the Flain",
+      "Husk's Cloak",
+      "Mask of the Flain",
+      "Scales of the Flain"
+     ],
+     "Titan": [
+      "Attendant's Mark",
+      "Carapace of the Flain",
+      "Claws of the Flain",
+      "Grips of the Flain",
+      "Skull of the Flain"
+     ],
+     "Warlock": [
+      "Adornment of the Flain",
+      "Reach of the Flain",
+      "Talons of the Flain",
+      "Visage of the Flain",
+      "Weaver's Bond"
+     ]
+    },
+    "bonuses": [
+     {
+      "pieces": 2,
+      "name": "Sinew Stitching",
+      "description": "Taking damage from combatants sometimes spawns a Threadling."
+     },
+     {
+      "pieces": 4,
+      "name": "Knit Together",
+      "description": "For a short time after your shields break, your next several Threadling hits restore health."
+     }
+    ]
+   }
+  }
  }
 }

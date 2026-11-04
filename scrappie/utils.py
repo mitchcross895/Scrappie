@@ -10,7 +10,7 @@ from .state import bot_state
 def create_embed(title: str, description: str, color: discord.Color) -> discord.Embed:
     return discord.Embed(title=title, description=description, color=color)
 
-async def safe_api_request(url: str, params: dict = None, headers: dict = None, allow_redirects: bool = True) -> Optional[dict]:
+async def safe_api_request(url: str, params: dict = None, headers: dict = None, allow_redirects: bool = True, quiet: bool = False) -> Optional[dict]:
     try:
         session = await bot_state.get_http_session()
         async with session.get(url, params=params, headers=headers or {}, allow_redirects=allow_redirects) as response:
@@ -23,11 +23,14 @@ async def safe_api_request(url: str, params: dict = None, headers: dict = None, 
                     # Return text content wrapped in dict for non-JSON responses
                     text = await response.text()
                     return {"text": text, "status": response.status}
-            logger.error(f"API request failed: {url} returned {response.status}")
+            if not quiet:
+                logger.error(f"API request failed: {url} returned {response.status}")
     except asyncio.TimeoutError:
-        logger.error(f"API request timeout: {url}")
+        if not quiet:
+            logger.error(f"API request timeout: {url}")
     except Exception as e:
-        logger.error(f"API request error for {url}: {e}")
+        if not quiet:
+            logger.error(f"API request error for {url}: {e}")
     return None
 
 @lru_cache(maxsize=128)

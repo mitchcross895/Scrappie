@@ -40,7 +40,7 @@ async def help_command(interaction: discord.Interaction):
     if bot.tree.get_command("item"):
         embed.add_field(
             name="\U0001F30C Destiny 2",
-            value="`/item <name>` - Weapon or armor lookup\n`/weekly` - Preview this week's raid post",
+            value="`/item <name>` - Weapon or armor lookup\n`/weekly` - Preview this week's raid and dungeon post",
             inline=False
         )
 

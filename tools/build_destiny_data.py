@@ -4,6 +4,7 @@ Run from the repo root after a Destiny 2 content patch:
     python tools/build_destiny_data.py
 Needs about 1 GB of memory and a 300 MB download, and no API key.
 --source DIR (repeatable) reads <Component>.json from DIR instead of downloading it.
+Dungeon data and the dungeon rotation cycle are written to raids.json too.
 The bot never runs this file.
 """
 import argparse
@@ -33,12 +34,42 @@ RAID_SOURCES = {
     "Crota's End": 'Source: "Crota\'s End" Raid',
     "Salvation's Edge": 'Source: "Salvation\'s Edge" Raid',
 }
+# Values are the exact Collections sourceString. Each dungeon has one armor set; weapon lists are only
+# as complete as these strings (Pit of Heresy has 1 weapon, The Shattered Throne has none).
+DUNGEON_SOURCES = {
+    "The Shattered Throne": 'Complete the "Shattered Throne" dungeon.',
+    "Pit of Heresy": 'Source: "Pit of Heresy" Dungeon',
+    "Prophecy": 'Source: "Prophecy" Dungeon',
+    "Grasp of Avarice": 'Source: "Grasp of Avarice" Dungeon',
+    "Duality": 'Source: Dungeon "Duality"',
+    "Spire of the Watcher": 'Source: "Spire of the Watcher" Dungeon',
+    "Ghosts of the Deep": 'Source: "Ghosts of the Deep" Dungeon',
+    "Warlord's Ruin": 'Source: "Warlord\'s Ruin" Dungeon',
+    "Vesper's Host": "Source: Vesper's Host",
+    "Sundered Doctrine": "Source: Sundered Doctrine",
+}
+# Community pattern from d2rad.com/rotation-history, not documented by Bungie: all transitions fit across
+# 22 weeks (week 20 listed a third dungeon, unconfirmed). Entry 1 starts at the anchor reset.
+DUNGEON_CYCLE_ANCHOR = "2026-11-03T17:00:00Z"
+DUNGEON_CYCLE = [
+    ["Pit of Heresy", "Spire of the Watcher"],
+    ["Prophecy", "Ghosts of the Deep"],
+    ["Grasp of Avarice", "Warlord's Ruin"],
+    ["Duality", "Vesper's Host"],
+    ["Spire of the Watcher", "Sundered Doctrine"],
+    ["Ghosts of the Deep", "The Shattered Throne"],
+    ["Warlord's Ruin", "Pit of Heresy"],
+    ["Prophecy", "Vesper's Host"],
+    ["Grasp of Avarice", "Sundered Doctrine"],
+    ["Duality", "The Shattered Throne"],
+]
 COMPONENTS = [
     "DestinyInventoryItemDefinition", "DestinyCollectibleDefinition", "DestinyEquipableItemSetDefinition",
     "DestinySandboxPerkDefinition", "DestinyActivityDefinition", "DestinyActivityModifierDefinition",
     "DestinyMilestoneDefinition", "DestinyObjectiveDefinition",
 ]
 WEEKLY_OBJECTIVE = "Weekly Raid Challenge"
+WEEKLY_DUNGEON_OBJECTIVE = "Weekly Dungeon Challenge"
 WEAPON_TIERS = {"Legendary", "Exotic"}
 VARIANT_TAG = re.compile(r"\s*\((?:Adept|Timelost|Harrowed)\)$")
 CLASS_NAMES = {0: "Titan", 1: "Hunter", 2: "Warlock"}
@@ -98,13 +129,13 @@ def build_armor_set(raid: str, source: str, t: dict, sources: dict) -> dict:
     assert [b["pieces"] for b in bonuses] == [2, 4], (raid, bonuses)
     return {"name": name_of(armor_set), "pieces": {k: sorted(pieces[k]) for k in sorted(pieces)}, "bonuses": bonuses}
 
-def build_weapons(raid: str, source: str, t: dict, sources: dict) -> list[dict]:
+def build_weapons(raid: str, source: str, t: dict, sources: dict, minimum: int = 6) -> list[dict]:
     weapons = {}
     for key, item in t["DestinyInventoryItemDefinition"].items():
         tier = (item.get("inventory") or {}).get("tierTypeName")
         if item.get("itemType") == 3 and sources[key] == source and tier in WEAPON_TIERS:
             weapons[VARIANT_TAG.sub("", name_of(item))] = {"type": item["itemTypeDisplayName"], "exotic": tier == "Exotic"}
-    assert len(weapons) >= 6 and sum(w["exotic"] for w in weapons.values()) <= 1, (raid, weapons)
+    assert len(weapons) >= minimum and sum(w["exotic"] for w in weapons.values()) <= 1, (raid, weapons)
     ordered = sorted(weapons.items(), key=lambda kv: (not kv[1]["exotic"], kv[0]))
     return [{"name": name, **details} for name, details in ordered]
 
@@ -131,6 +162,37 @@ def build_raids(t: dict, version: str, sources: dict) -> dict:
         "ignored_modifiers": sorted(int(k) for k, m in modifiers.items() if not modifier_is_shown(m)),
         "raids": raids,
     }
+
+def check_cycle(cycle: list[list[str]]) -> None:
+    """The stale check needs adjacent pairs to be disjoint."""
+    pairs = [frozenset(p) for p in cycle]
+    assert len(set(pairs)) == len(cycle) == 10 and all(len(p) == 2 for p in pairs), cycle
+    assert sorted(n for p in cycle for n in p) == sorted(list(DUNGEON_SOURCES) * 2), cycle
+    assert all(not pairs[i] & pairs[(i + 1) % len(pairs)] for i in range(len(pairs))), cycle
+
+def build_dungeons(t: dict, sources: dict) -> dict:
+    activities = t["DestinyActivityDefinition"]
+    weekly = {int(k) for k, o in t["DestinyObjectiveDefinition"].items() if name_of(o) == WEEKLY_DUNGEON_OBJECTIVE}
+    assert len(weekly) == len(DUNGEON_SOURCES), weekly
+    owners = collections.defaultdict(set)
+    for activity in activities.values():
+        for challenge in activity.get("challenges") or []:
+            if challenge.get("objectiveHash") in weekly:
+                owners[challenge["objectiveHash"]].add(name_of(activity).split(":")[0])
+    assert all(len(names) == 1 for names in owners.values()), owners
+    objectives = {str(k): next(iter(v)) for k, v in sorted(owners.items())}
+    assert sorted(objectives.values()) == sorted(DUNGEON_SOURCES), objectives
+    check_cycle(DUNGEON_CYCLE)
+    dungeons = {}
+    for name, source in DUNGEON_SOURCES.items():
+        dungeons[name] = {
+            "master_activities": sorted(int(k) for k, a in activities.items() if name_of(a) == f"{name}: Master"),
+            "weapons": build_weapons(name, source, t, sources, minimum=0),
+            "armor_set": build_armor_set(name, source, t, sources),
+        }
+        print(f"{name}: {len(dungeons[name]['weapons'])} weapons, set {dungeons[name]['armor_set']['name']}")
+    return {"dungeon_cycle_anchor": DUNGEON_CYCLE_ANCHOR, "dungeon_cycle": DUNGEON_CYCLE,
+            "dungeon_objectives": objectives, "dungeons": dungeons}
 
 def item_label(item: dict) -> str:
     kind = item.get("itemTypeDisplayName") or "Item"
@@ -167,6 +229,7 @@ def main() -> None:
     t = load_components(args.source, manifest["Response"]["jsonWorldComponentContentPaths"]["en"])
     sources = sources_by_item(t["DestinyInventoryItemDefinition"], t["DestinyCollectibleDefinition"])
     raids, items = build_raids(t, version, sources), build_items(t)
+    raids.update(build_dungeons(t, sources))
     args.out.mkdir(exist_ok=True)
     write_raids(args.out / "raids.json", raids)
     write_lines(args.out / "items.json", items)

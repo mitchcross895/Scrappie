@@ -18,3 +18,5 @@ class Config:
     WEEKLY_CHECK_MINUTES = 10
     WEEKLY_CATCHUP_HOURS = 24  # After this a missed post is skipped
     WEEKLY_HISTORY_LIMIT = 100  # Messages scanned for an existing post
+    WEEKLY_DUNGEON_WAIT_MINUTES = 30  # Longest the post waits for confirmed dungeons once raids are fresh
+    WEEKLY_EMBED_LIMIT = 5900  # Discord allows 6000 per message; this keeps a margin

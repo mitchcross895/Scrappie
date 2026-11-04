@@ -21,6 +21,7 @@ class BotState:
         self.weekly_posted_reset: Optional[datetime.datetime] = None
         self.weekly_log_reset: Optional[datetime.datetime] = None
         self.weekly_logged: set = set()
+        self.weekly_raids_ready: Optional[tuple] = None  # (reset, first time raids were fresh), starts the dungeon wait
 
     async def initialize(self):
         await self.get_http_session()
