@@ -1,10 +1,13 @@
 class Config:
     REQUEST_TIMEOUT = 15
     TRIVIA_TIMEOUT = 30
-    SETUP_TIMEOUT = 60
+    TRIVIA_REVEAL_SECONDS = 5  # Pause on the answer before the next question
+    TRIVIA_DEFAULT_QUESTIONS = 5
+    TRIVIA_MAX_QUESTIONS = 10
+    TRIVIA_MAX_TIMEOUTS = 2  # Timeouts in a row that end a round
+    TRIVIA_API_SPACING = 5.5  # Seconds between OpenTDB calls; the limit is per IP
     MAX_CITY_NAME_LENGTH = 100
-    TRIVIA_CATEGORIES_API = "https://opentdb.com/api_category.php"
-    TRIVIA_API = "https://opentdb.com/api.php?amount=1&type=multiple"
+    TRIVIA_API = "https://opentdb.com/api.php?type=multiple"
     DAD_JOKE_API = "https://icanhazdadjoke.com/"
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     LOG_FILE = "bot.log"

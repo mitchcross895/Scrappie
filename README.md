@@ -11,7 +11,7 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 	- `/shuffle` — Shuffle the current guild queue (randomizes upcoming tracks).
 
 - **Trivia / Games**
-	- `/trivia` — Interactive trivia with category/difficulty setup and time-limited buttons.
+	- `/trivia` — Trivia rounds of 1 to 10 questions with optional category and difficulty, time-limited buttons, and an end summary.
 	- `/fact` — Return a random fact.
 	- `/dadjoke` — Return a random dad joke.
 	- `/coin` — Flip a coin (Heads/Tails).

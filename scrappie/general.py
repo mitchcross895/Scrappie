@@ -20,7 +20,7 @@ async def help_command(interaction: discord.Interaction):
 
     embed.add_field(
         name="🎲 Fun Commands",
-        value="`/trivia` - Trivia questions\n`/fact` - Random fact\n`/dadjoke` - Random dad joke\n`/coin` - Flip coin\n`/number <min> <max>` - Random number",
+        value="`/trivia [category] [difficulty] [questions]` - Trivia round\n`/fact` - Random fact\n`/dadjoke` - Random dad joke\n`/coin` - Flip coin\n`/number <min> <max>` - Random number",
         inline=False
     )
 

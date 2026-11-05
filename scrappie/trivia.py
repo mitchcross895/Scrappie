@@ -1,9 +1,12 @@
+import asyncio
 import html
 import random
-from typing import Any, Dict, List
+import time
+from typing import List, Optional, Tuple
 
 import discord
-from discord.ui import Button, Select, View
+from discord import app_commands
+from discord.ui import Button, View
 
 from .bot import bot
 from .config import Config
@@ -11,242 +14,276 @@ from .log import logger
 from .state import bot_state
 from .utils import create_embed, rate_limit, safe_api_request
 
+# Clip lengths that keep every embed inside Discord's limits even at 10 questions
+QUESTION_LIMIT = 1000
+ANSWER_LIMIT = 300
+SUMMARY_QUESTION_LIMIT = 120
+SUMMARY_ANSWER_LIMIT = 100
+
+# OpenTDB category ids (https://opentdb.com/api_category.php)
+CATEGORY_CHOICES = [
+    app_commands.Choice(name="General Knowledge", value=9),
+    app_commands.Choice(name="Entertainment: Books", value=10),
+    app_commands.Choice(name="Entertainment: Film", value=11),
+    app_commands.Choice(name="Entertainment: Music", value=12),
+    app_commands.Choice(name="Entertainment: Musicals & Theatres", value=13),
+    app_commands.Choice(name="Entertainment: Television", value=14),
+    app_commands.Choice(name="Entertainment: Video Games", value=15),
+    app_commands.Choice(name="Entertainment: Board Games", value=16),
+    app_commands.Choice(name="Science & Nature", value=17),
+    app_commands.Choice(name="Science: Computers", value=18),
+    app_commands.Choice(name="Science: Mathematics", value=19),
+    app_commands.Choice(name="Mythology", value=20),
+    app_commands.Choice(name="Sports", value=21),
+    app_commands.Choice(name="Geography", value=22),
+    app_commands.Choice(name="History", value=23),
+    app_commands.Choice(name="Politics", value=24),
+    app_commands.Choice(name="Art", value=25),
+    app_commands.Choice(name="Celebrities", value=26),
+    app_commands.Choice(name="Animals", value=27),
+    app_commands.Choice(name="Vehicles", value=28),
+    app_commands.Choice(name="Entertainment: Comics", value=29),
+    app_commands.Choice(name="Science: Gadgets", value=30),
+    app_commands.Choice(name="Entertainment: Japanese Anime & Manga", value=31),
+    app_commands.Choice(name="Entertainment: Cartoon & Animations", value=32),
+]
+
+DIFFICULTY_CHOICES = [
+    app_commands.Choice(name="Easy", value="easy"),
+    app_commands.Choice(name="Medium", value="medium"),
+    app_commands.Choice(name="Hard", value="hard"),
+]
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
 class TriviaView(View):
     def __init__(self, user_id: int, question_data: dict):
         super().__init__(timeout=Config.TRIVIA_TIMEOUT)
         self.user_id = user_id
-        self.question_data = question_data
         self.correct = html.unescape(question_data['correct_answer'])
-        self.incorrect = [html.unescape(a) for a in question_data['incorrect_answers']]
-        self.options = self.incorrect + [self.correct]
+        self.options = [html.unescape(a) for a in question_data['incorrect_answers']] + [self.correct]
         random.shuffle(self.options)
-        self.message = None
+        self.selected: Optional[int] = None  # 1-based option pressed; None until then
         self.answered = False
 
-        for idx, option in enumerate(self.options, 1):
+        for idx in range(1, len(self.options) + 1):
             btn = Button(label=str(idx), style=discord.ButtonStyle.primary, custom_id=f"option_{idx}", emoji="🔢")
-            btn.callback = self.create_callback(idx, option)
+            btn.callback = self.create_callback(idx)
             self.add_item(btn)
 
     @staticmethod
     def _option_index(button: Button) -> int:
         return int(button.custom_id.split('_')[1])
 
-    def create_callback(self, idx: int, option: str):
+    @property
+    def mark(self) -> str:
+        if self.selected is None:
+            return "⏰"
+        return "✅" if self.options[self.selected - 1] == self.correct else "❌"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Not your question! Use `/trivia`.", ephemeral=True)
+            return False
+        return True
+
+    def create_callback(self, idx: int):
         async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                return await interaction.response.send_message("Not your question! Use `/trivia`.", ephemeral=True)
             if self.answered:
                 return await interaction.response.send_message("Already answered!", ephemeral=True)
             self.answered = True
-            await self.process_answer(interaction, idx, option)
+            self.selected = idx
+            self.stop()  # Wakes the round loop, which edits the message
+            await interaction.response.defer()
         return callback
 
-    async def process_answer(self, interaction: discord.Interaction, idx: int, selected_option: str):
-        is_correct = selected_option == self.correct
-
+    def reveal(self):
+        """Disable the buttons and colour them; the selected option is None on a timeout."""
+        self.answered = True
         for child in self.children:
             child.disabled = True
             option_idx = self._option_index(child)
-            option_text = self.options[option_idx - 1]
 
-            if option_text == self.correct:
+            if self.options[option_idx - 1] == self.correct:
                 child.style = discord.ButtonStyle.success
                 child.emoji = "✅"
-            elif option_idx == idx:
+            elif option_idx == self.selected:
                 child.style = discord.ButtonStyle.danger
                 child.emoji = "❌"
             else:
                 child.style = discord.ButtonStyle.secondary
 
-        await interaction.response.edit_message(view=self)
-        await self.send_result(interaction, is_correct, selected_option)
-        self.stop()
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        # Never reaches bot.tree.error. The round carries on: a pressed answer already stopped
+        # the view, and otherwise the timeout does.
+        logger.error(f"Trivia button error: {error}", exc_info=error)
 
-    async def send_result(self, interaction: discord.Interaction, is_correct: bool, selected_option: str):
-        title = "🎉 Correct!" if is_correct else "❌ Incorrect"
-        desc = f"Well done, {interaction.user.mention}!" if is_correct else f"{interaction.user.mention}, correct: **{self.correct}**"
-        color = discord.Color.green() if is_correct else discord.Color.red()
-
-        embed = create_embed(title, desc, color)
-        embed.add_field(name="Question", value=html.unescape(self.question_data['question']), inline=False)
-        embed.add_field(name="Category", value=self.question_data['category'], inline=True)
-        embed.add_field(name="Difficulty", value=self.question_data['difficulty'].capitalize(), inline=True)
-
-        if not is_correct:
-            embed.add_field(name="Your Answer", value=selected_option, inline=True)
-
-        embed.set_footer(text="Use /trivia to play again!")
-        await interaction.followup.send(embed=embed)
-
-    async def on_timeout(self):
-        if self.message is None or self.answered:
-            return
-
-        self.answered = True
-        for child in self.children:
-            child.disabled = True
-            option_idx = self._option_index(child)
-            if self.options[option_idx - 1] == self.correct:
-                child.style = discord.ButtonStyle.success
-                child.emoji = "✅"
-            else:
-                child.style = discord.ButtonStyle.secondary
-
-        try:
-            embed = self.message.embeds[0]
-            embed.title = "⏰ Time's Up!"
-            embed.color = discord.Color.dark_gray()
-            embed.set_footer(text="Time's up! Use /trivia to try again.")
-            await self.message.edit(embed=embed, view=self)
-            await self.message.reply(f"⏰ Time's up! Answer: **{self.correct}**")
-        except Exception as e:
-            logger.error(f"Error updating expired trivia: {e}")
-
-class TriviaSetupView(View):
-    def __init__(self, interaction: discord.Interaction, categories: List[Dict[str, Any]]):
-        super().__init__(timeout=Config.SETUP_TIMEOUT)
-        self.interaction = interaction
-        self.category = "0"
-        self.difficulty = "any"
-        self.categories = categories
-        self.setup_components()
-
-    def setup_components(self):
-        category_options = [discord.SelectOption(label="Any Category", description="Random", value="0", emoji="🎲")]
-        for cat in self.categories[:23]:
-            category_options.append(discord.SelectOption(label=cat["name"][:100], value=str(cat["id"])))
-
-        cat_select = Select(placeholder="🎯 Choose category...", options=category_options, custom_id="category_select")
-        cat_select.callback = self.category_callback
-        self.add_item(cat_select)
-
-        diff_options = [
-            discord.SelectOption(label="Any Difficulty", value="any", emoji="🎲"),
-            discord.SelectOption(label="Easy", value="easy", emoji="🟢"),
-            discord.SelectOption(label="Medium", value="medium", emoji="🟡"),
-            discord.SelectOption(label="Hard", value="hard", emoji="🔴")
-        ]
-
-        diff_select = Select(placeholder="⚡ Choose difficulty...", options=diff_options, custom_id="difficulty_select")
-        diff_select.callback = self.difficulty_callback
-        self.add_item(diff_select)
-
-        start_btn = Button(label="Start Trivia!", style=discord.ButtonStyle.success, emoji="🚀", custom_id="start_trivia")
-        start_btn.callback = self.start_callback
-        self.add_item(start_btn)
-
-    async def category_callback(self, interaction: discord.Interaction):
-        self.category = interaction.data['values'][0]
-        selected = next((c["name"] for c in self.categories if str(c["id"]) == self.category), "Any Category")
-        await interaction.response.send_message(f"📂 Selected: **{selected}**", ephemeral=True)
-
-    async def difficulty_callback(self, interaction: discord.Interaction):
-        self.difficulty = interaction.data['values'][0]
-        display = self.difficulty.capitalize() if self.difficulty != "any" else "Any Difficulty"
-        await interaction.response.send_message(f"⚡ Selected: **{display}**", ephemeral=True)
-
-    async def start_callback(self, interaction: discord.Interaction):
-        self.stop()
-        for child in self.children:
-            child.disabled = True
-
-        embed = create_embed("🔄 Loading Trivia...", "Fetching question...", discord.Color.yellow())
-        await interaction.response.edit_message(embed=embed, view=self)
-        await fetch_and_display_trivia(interaction, self.category, self.difficulty)
-
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-        try:
-            embed = create_embed("⏰ Setup Expired", "Timed out. Use `/trivia` to try again.", discord.Color.dark_gray())
-            await self.interaction.edit_original_response(embed=embed, view=self)
-        except Exception as e:
-            logger.warning(f"Could not update expired setup: {e}")
-
-async def fetch_categories() -> List[Dict[str, Any]]:
-    if bot_state.trivia_categories:
-        return bot_state.trivia_categories
-
-    data = await safe_api_request(Config.TRIVIA_CATEGORIES_API)
-
-    if data and data.get("trivia_categories"):
-        bot_state.trivia_categories = data["trivia_categories"]
-        return bot_state.trivia_categories
-
-    logger.warning("Failed to fetch categories, using fallback")
-    return [
-        {"id": 9, "name": "General Knowledge"},
-        {"id": 10, "name": "Entertainment: Books"},
-        {"id": 11, "name": "Entertainment: Film"},
-        {"id": 12, "name": "Entertainment: Music"},
-        {"id": 17, "name": "Science & Nature"},
-        {"id": 18, "name": "Science: Computers"},
-        {"id": 19, "name": "Science: Mathematics"},
-        {"id": 21, "name": "Sports"},
-        {"id": 22, "name": "Geography"},
-        {"id": 23, "name": "History"},
-        {"id": 27, "name": "Animals"}
-    ]
-
-def _trivia_params(category_id: str, difficulty: str) -> dict:
-    params = {}
-    if category_id != "0":
+def _trivia_params(amount: int, category_id: Optional[int], difficulty: Optional[str]) -> dict:
+    params = {"amount": amount}
+    if category_id is not None:
         params["category"] = category_id
-    if difficulty != "any":
+    if difficulty is not None:
         params["difficulty"] = difficulty
     return params
 
-def _question_embed(question_data: dict, options: List[str], user: discord.abc.User) -> discord.Embed:
-    question_text = html.unescape(question_data["question"])
-    category = question_data["category"]
+def _response_code(data: Optional[dict]) -> Optional[int]:
+    return data.get("response_code") if data else None
+
+async def _spaced_request(params: dict) -> Optional[dict]:
+    # OpenTDB limits each IP to about one request per 5 seconds
+    async with bot_state.trivia_api_lock:
+        wait = bot_state.trivia_last_call + Config.TRIVIA_API_SPACING - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            return await safe_api_request(Config.TRIVIA_API, params)
+        finally:
+            bot_state.trivia_last_call = time.monotonic()
+
+async def fetch_round(amount: int, category_id: Optional[int], difficulty: Optional[str]) -> Optional[dict]:
+    """Fetch a whole round in one request, retrying once if OpenTDB is busy."""
+    params = _trivia_params(amount, category_id, difficulty)
+    data = await _spaced_request(params)
+    if _response_code(data) in (None, 5):  # None covers HTTP 429; 5 is OpenTDB's rate limit code
+        data = await _spaced_request(params)
+    return data
+
+def _failure_text(data: Optional[dict], amount: int) -> str:
+    code = _response_code(data)
+    if code in (None, 5):
+        return "OpenTDB is busy right now. Try again in a moment."
+    if code == 1:  # OpenTDB returns nothing rather than a partial round
+        return f"OpenTDB doesn't have {amount} question(s) for those settings. Try fewer, or a different category or difficulty."
+    return "Try different settings!"
+
+def _set_requester(embed: discord.Embed, user: discord.abc.User):
+    embed.set_footer(text=f"Requested by {user.display_name}", icon_url=user.display_avatar.url)
+
+def _question_embed(question_data: dict, options: List[str], user: discord.abc.User, number: int, total: int) -> discord.Embed:
+    question_text = _clip(html.unescape(question_data["question"]), QUESTION_LIMIT)
+    category = html.unescape(question_data["category"])
     difficulty_level = question_data["difficulty"]
 
     difficulty_emojis = {"easy": "🟢", "medium": "🟡", "hard": "🔴"}
     difficulty_emoji = difficulty_emojis.get(difficulty_level, "⚪")
 
-    embed = create_embed("🧠 Trivia Question", f"**{question_text}**", discord.Color.blurple())
+    embed = create_embed(f"🧠 Trivia Question {number}/{total}", f"**{question_text}**", discord.Color.blurple())
     embed.add_field(name="📂 Category", value=category, inline=True)
     embed.add_field(name=f"{difficulty_emoji} Difficulty", value=difficulty_level.capitalize(), inline=True)
     embed.add_field(name="⏱️ Time", value=f"{Config.TRIVIA_TIMEOUT}s", inline=True)
 
     for idx, option in enumerate(options, 1):
-        embed.add_field(name=f"{idx}️⃣ Option {idx}", value=option, inline=False)
+        embed.add_field(name=f"{idx}️⃣ Option {idx}", value=_clip(option, ANSWER_LIMIT), inline=False)
 
-    embed.set_footer(text=f"Requested by {user.display_name}", icon_url=user.display_avatar.url)
+    _set_requester(embed, user)
     return embed
 
-async def fetch_and_display_trivia(interaction: discord.Interaction, category_id: str = "0", difficulty: str = "any"):
-    data = await safe_api_request(Config.TRIVIA_API, _trivia_params(category_id, difficulty))
+def _reveal_embed(view: TriviaView, question_data: dict, user: discord.abc.User, number: int, total: int, score: int) -> discord.Embed:
+    answer = _clip(view.correct, ANSWER_LIMIT)
+    if view.mark == "✅":
+        title, line, color = "🎉 Correct!", f"Well done, {user.mention}! Answer: **{answer}**", discord.Color.green()
+    elif view.mark == "❌":
+        title, line, color = "❌ Incorrect", f"{user.mention}, correct: **{answer}**", discord.Color.red()
+    else:
+        title, line, color = "⏰ Time's Up!", f"⏰ Time's up! Answer: **{answer}**", discord.Color.dark_gray()
 
-    if not data or data.get("response_code") != 0 or not data.get("results"):
-        embed = create_embed("😅 No Questions", "Try different settings!", discord.Color.orange())
-        return await interaction.edit_original_response(embed=embed, view=None)
+    embed = _question_embed(question_data, view.options, user, number, total)
+    embed.title = title
+    embed.color = color
+    embed.description = f"{embed.description}\n\n{line}"
+    embed.add_field(name="🏆 Score", value=f"{score}/{number}", inline=False)
+    return embed
 
-    question_data = data["results"][0]
-    view = TriviaView(interaction.user.id, question_data)
-    embed = _question_embed(question_data, view.options, interaction.user)
+def _summary_embed(results: List[Tuple[str, str, str]], total: int, category_name: str, difficulty_name: str, user: discord.abc.User) -> discord.Embed:
+    played = len(results)
+    marks = [mark for mark, _, _ in results]
+    score = marks.count("✅")
 
-    msg = await interaction.edit_original_response(embed=embed, view=view)
-    view.message = msg
+    lines = []
+    if played < total:
+        lines.append(f"Ended early after {played} of {total} questions: {Config.TRIVIA_MAX_TIMEOUTS} timeouts in a row.\n")
+    for number, (mark, question, answer) in enumerate(results, 1):
+        lines.append(f"{mark} {number}. {_clip(question, SUMMARY_QUESTION_LIMIT)}\n**{_clip(answer, SUMMARY_ANSWER_LIMIT)}**")
+
+    embed = create_embed("🏁 Trivia Results", "\n".join(lines), discord.Color.blurple())
+    embed.add_field(name="🏆 Score", value=f"{score}/{played} ({round(100 * score / played)}%)", inline=True)
+    embed.add_field(name="📂 Category", value=category_name, inline=True)
+    embed.add_field(name="⚡ Difficulty", value=difficulty_name, inline=True)
+    embed.add_field(name="⏱️ Timeouts", value=str(marks.count("⏰")), inline=True)
+    _set_requester(embed, user)
+    return embed
+
+async def _edit_round(interaction: discord.Interaction, **kwargs) -> bool:
+    """Edit the round's message. False means it can't be edited (e.g. deleted), so the round ends."""
+    try:
+        await interaction.edit_original_response(**kwargs)
+        return True
+    except Exception as e:
+        logger.warning(f"Trivia round ended, could not edit its message: {e}")
+        return False
+
+async def play_round(interaction: discord.Interaction, questions: List[dict], category_name: str, difficulty_name: str):
+    user = interaction.user
+    total = len(questions)
+    results = []
+    score = 0
+    timeouts_in_a_row = 0
+
+    for number, question_data in enumerate(questions, 1):
+        view = TriviaView(user.id, question_data)
+        embed = _question_embed(question_data, view.options, user, number, total)
+        if not await _edit_round(interaction, embed=embed, view=view):
+            return
+
+        await view.wait()
+        view.reveal()
+        score += view.mark == "✅"
+        timeouts_in_a_row = timeouts_in_a_row + 1 if view.mark == "⏰" else 0
+        results.append((view.mark, html.unescape(question_data["question"]), view.correct))
+
+        embed = _reveal_embed(view, question_data, user, number, total, score)
+        if not await _edit_round(interaction, embed=embed, view=view):
+            return
+        await asyncio.sleep(Config.TRIVIA_REVEAL_SECONDS)
+
+        if timeouts_in_a_row >= Config.TRIVIA_MAX_TIMEOUTS:
+            break
+
+    await _edit_round(interaction, embed=_summary_embed(results, total, category_name, difficulty_name, user), view=None)
 
 @bot.tree.command(name="trivia", description="Play trivia game.")
+@app_commands.describe(category="Question category (default: any)", difficulty="Question difficulty (default: any)", questions="Number of questions (default: 5)")
+@app_commands.choices(category=CATEGORY_CHOICES, difficulty=DIFFICULTY_CHOICES)
 @rate_limit
-async def trivia_command(interaction: discord.Interaction):
-    await interaction.response.defer()
+async def trivia_command(
+    interaction: discord.Interaction,
+    category: Optional[app_commands.Choice[int]] = None,
+    difficulty: Optional[app_commands.Choice[str]] = None,
+    questions: app_commands.Range[int, 1, Config.TRIVIA_MAX_QUESTIONS] = Config.TRIVIA_DEFAULT_QUESTIONS,
+):
+    user_id = interaction.user.id
+    if user_id in bot_state.active_trivia:
+        return await interaction.response.send_message("You already have a trivia round running! Finish it first.", ephemeral=True)
 
+    bot_state.active_trivia.add(user_id)
     try:
-        categories = await fetch_categories()
-        view = TriviaSetupView(interaction, categories)
+        await interaction.response.defer()
 
-        embed = create_embed("🧠 Trivia Setup", "Configure your question:", discord.Color.blue())
-        embed.add_field(name="📂 Categories", value=f"{len(categories)} available", inline=True)
-        embed.add_field(name="⚡ Difficulties", value="Easy, Medium, Hard", inline=True)
-        embed.add_field(name="⏱️ Time", value=f"{Config.TRIVIA_TIMEOUT}s", inline=True)
-        embed.set_footer(text="Select preferences and click 'Start Trivia!'", icon_url=interaction.user.display_avatar.url)
+        category_id = category.value if category else None
+        difficulty_value = difficulty.value if difficulty else None
+        data = await fetch_round(questions, category_id, difficulty_value)
 
-        await interaction.followup.send(embed=embed, view=view)
-    except Exception as e:
-        logger.error(f"Error in trivia setup: {e}")
-        embed = create_embed("❌ Setup Error", "Try again later.", discord.Color.red())
-        await interaction.followup.send(embed=embed)
+        if _response_code(data) != 0 or not data.get("results"):
+            embed = create_embed("😅 No Questions", _failure_text(data, questions), discord.Color.orange())
+            await _edit_round(interaction, embed=embed, view=None)
+            return
+
+        await play_round(
+            interaction,
+            data["results"],
+            category.name if category else "Any Category",
+            difficulty.name if difficulty else "Any Difficulty",
+        )
+    finally:
+        bot_state.active_trivia.discard(user_id)

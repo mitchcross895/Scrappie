@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 from collections import deque
 from datetime import timezone
@@ -15,7 +16,9 @@ class BotState:
         self.music_queues: Dict[str, deque] = {}
         self.request_counts: Dict[int, List] = {}
         self.now_playing: Dict[str, Optional[str]] = {}
-        self.trivia_categories: Optional[List[Dict[str, Any]]] = None
+        self.active_trivia: set = set()  # User ids with a round running
+        self.trivia_api_lock = asyncio.Lock()
+        self.trivia_last_call = 0.0  # time.monotonic() of the last OpenTDB call
         self.queue_cleanup_task: Optional[Any] = None  # Set by music.py; stays None without voice support
         self.weekly_reset_task: Optional[Any] = None  # Set by destiny.setup(); stays None without a key and channel
         self.weekly_posted_reset: Optional[datetime.datetime] = None
