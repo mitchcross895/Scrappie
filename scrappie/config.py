@@ -13,6 +13,7 @@ class Config:
     QUEUE_CLEANUP_HOURS = 1  # How often to clean inactive queues
     BUNGIE_ROOT = "https://www.bungie.net"
     BUNGIE_API_ROOT = "https://www.bungie.net/Platform"
+    LIGHT_GG_ITEM_URL = "https://www.light.gg/db/items/{}/"  # Unverified: light.gg blocks automated fetches
     WEEKLY_RESET_WEEKDAY = 1  # Tuesday
     WEEKLY_RESET_HOUR_UTC = 17
     WEEKLY_CHECK_MINUTES = 10

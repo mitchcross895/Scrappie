@@ -340,7 +340,7 @@ def intrinsic_hash(item: dict) -> Optional[int]:
 def image_url(path: Optional[str]) -> Optional[str]:
     return Config.BUNGIE_ROOT + path if path and path.startswith("/") else None
 
-def item_spec(item: dict, perk: Optional[dict], other_versions: int) -> dict:
+def item_spec(item: dict, perk: Optional[dict], other_versions: int, item_hash: int) -> dict:
     display = item.get("displayProperties") or {}
     fields = [("Type", item.get("itemTypeAndTierDisplayName") or item.get("itemTypeDisplayName") or "Unknown")]
     damage = DAMAGE_TYPES.get(item.get("defaultDamageType"))
@@ -349,6 +349,7 @@ def item_spec(item: dict, perk: Optional[dict], other_versions: int) -> dict:
     perk_display = (perk or {}).get("displayProperties") or {}
     if perk_display.get("name"):
         fields.append((f"Intrinsic: {perk_display['name']}", perk_display.get("description") or "No description."))
+    fields.append(("More info", f"[View on light.gg]({Config.LIGHT_GG_ITEM_URL.format(item_hash)})"))
     return {
         "title": clip(display.get("name") or "Unknown item", 256),
         "description": clip(item.get("flavorText") or "", 4096),
@@ -393,7 +394,7 @@ async def item_command(interaction: discord.Interaction, name: str):
         return await interaction.followup.send(embed=error_embed("Couldn't reach Bungie. Try again later."))
     perk_hash = intrinsic_hash(item) if item.get("itemType") == 3 else None
     perk = await bungie_get(f"/Destiny2/Manifest/DestinyInventoryItemDefinition/{perk_hash}/") if perk_hash else None
-    await interaction.followup.send(embed=build_embed(item_spec(item, perk, len(entry.hashes) - 1)))
+    await interaction.followup.send(embed=build_embed(item_spec(item, perk, len(entry.hashes) - 1, entry.hashes[0])))
 
 @app_commands.command(name="weekly", description="Preview this week's Destiny 2 raid and dungeon post (only you see it).")
 @rate_limit

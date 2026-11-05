@@ -23,7 +23,7 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 	- `/help` — Shows a command summary.
 
 - **Destiny 2** (needs `BUNGIE_API_KEY`)
-	- `/item <name>` — Weapon or armor lookup with autocomplete.
+	- `/item <name>` — Weapon or armor lookup with autocomplete and a light.gg link.
 	- `/weekly` — Private preview of the weekly raid and dungeon post.
 	- Automatic weekly post at Tuesday 17:00 UTC (11am CST, 12pm CDT) with the featured raids and dungeons, modifiers, drops, set bonuses and a labelled one-week prediction. Dungeons and the forecast are labelled predicted when Bungie has not confirmed them. Needs `WEEKLY_RESET_CHANNEL_ID`.
 
