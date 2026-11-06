@@ -2,18 +2,18 @@ import asyncio
 import random
 import time
 from collections import deque
-from functools import wraps
 
 import discord
 import yt_dlp
 from discord import app_commands
 from discord.ext import tasks
 
+from . import db
 from .bot import bot
 from .config import Config
 from .log import logger
 from .state import bot_state, queue_key
-from .utils import BotView, RequesterView, create_embed, format_duration, rate_limit
+from .utils import BotView, RequesterView, create_embed, format_duration, guild_required, rate_limit, storage_required
 
 ytdl_format_options = {
     'format': 'bestaudio[ext=webm]/bestaudio/best',
@@ -92,15 +92,6 @@ def _elapsed_seconds(guild_key) -> int:
     timing = bot_state.track_timing[guild_key]
     end = timing["paused_at"] if timing["paused_at"] is not None else time.monotonic()
     return int(end - timing["started"])
-
-def guild_required(func):
-    """Runtime check, not guild_only: a DM gets a friendly reply."""
-    @wraps(func)
-    async def wrapper(interaction: discord.Interaction, *args, **kwargs):
-        if interaction.guild is None:
-            return await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
-        return await func(interaction, *args, **kwargs)
-    return wrapper
 
 async def connected_voice_client(interaction: discord.Interaction):
     """Return the guild's connected voice client, or None after replying with the error."""
@@ -607,6 +598,89 @@ async def remove_command(interaction: discord.Interaction, position: app_command
     _, title = queue[position - 1]
     del queue[position - 1]  # No await between read and delete
     await interaction.response.send_message(embed=create_embed("\U0001F5D1\ufe0f Removed", f"**{title[:100]}**", discord.Color.green()))
+
+playlist_group = app_commands.Group(name="playlist", description="Save and load your own playlists.")
+
+async def _playlist_autocomplete(interaction: discord.Interaction, current: str):
+    """Not rate-limited: Discord calls it per keystroke. db bounds it below the 3 second limit, and any failure shows no choices."""
+    try:
+        rows = await db.list_playlists(interaction.user.id)
+    except db.StorageError:
+        return []
+    needle = current.casefold()
+    names = [name[:Config.AUTOCOMPLETE_NAME_MAX] for name, _ in rows if needle in name.casefold()]
+    return [app_commands.Choice(name=n, value=n) for n in names[:Config.AUTOCOMPLETE_MAX_CHOICES]]
+
+SAVE_REPLIES = {
+    db.EXISTS: "❌ You already have a playlist with that name. Delete it first.",
+    db.FULL: f"❌ You can have {Config.PLAYLIST_MAX_PER_USER} playlists. Delete one first.",
+    db.INVALID: "❌ That name isn't valid.",
+}
+
+@playlist_group.command(name="save", description="Save the current song and queue as a playlist.")
+@app_commands.describe(name="Playlist name")
+@guild_required
+@rate_limit
+@storage_required
+async def playlist_save(interaction: discord.Interaction, name: app_commands.Range[str, 1, Config.PLAYLIST_NAME_MAX]):
+    guild_key = queue_key(interaction.guild_id)
+    current = bot_state.current_tracks.get(guild_key)
+    tracks = ([current] if current else []) + list(bot_state.music_queues.get(guild_key) or ())  # Snapshot before any await
+    if not tracks:
+        return await interaction.response.send_message("❌ Nothing is playing or queued.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    outcome = await db.save_playlist(interaction.user.id, name, tracks)
+    if outcome != db.SAVED:
+        return await interaction.followup.send(SAVE_REPLIES[outcome], ephemeral=True)
+    saved = min(len(tracks), Config.PLAYLIST_MAX_TRACKS)
+    note = f" (first {saved} of {len(tracks)})" if saved < len(tracks) else ""
+    await interaction.followup.send(embed=create_embed("💾 Playlist Saved", f"Saved **{saved}** songs{note}.", discord.Color.green()), ephemeral=True)
+
+@playlist_group.command(name="load", description="Add one of your playlists to the queue.")
+@app_commands.describe(name="Playlist name")
+@app_commands.autocomplete(name=_playlist_autocomplete)
+@guild_required
+@rate_limit
+@storage_required
+async def playlist_load(interaction: discord.Interaction, name: str):
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        return await interaction.response.send_message("❌ You must be in a voice channel.", ephemeral=True)
+    tracks = await db.get_playlist(interaction.user.id, name)  # Before the defer: a storage failure stays private
+    if tracks is None:
+        return await interaction.response.send_message("❌ You have no playlist with that name.", ephemeral=True)
+    await interaction.response.defer()
+    voice_client = await _ensure_voice_connection(interaction)  # Outside the try, like /play: failures reach on_app_command_error
+    guild_key = queue_key(interaction.guild_id)
+    bot_state.cancel_idle(guild_key)
+    bot_state.music_queues.setdefault(guild_key, deque()).extend(tracks)  # Never keep this deque: /shuffle replaces it
+    try:
+        await interaction.followup.send(embed=create_embed("✅ Playlist Added", f"Added **{len(tracks)}** songs!", discord.Color.green()))
+        if not is_active(voice_client):
+            await play_next_song(voice_client, guild_key, interaction.channel)
+    finally:
+        if not bot_state.music_queues.get(guild_key):  # Same rule as /play
+            await _go_idle(voice_client, guild_key, interaction.channel)
+
+@playlist_group.command(name="list", description="List your playlists.")
+@rate_limit
+@storage_required
+async def playlist_list(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    rows = await db.list_playlists(interaction.user.id)
+    text = "\n".join(f"**{name}** - {count} songs" for name, count in rows) or "No playlists yet. Use `/playlist save`."
+    await interaction.followup.send(embed=create_embed("💾 Your Playlists", text, discord.Color.blue()), ephemeral=True)
+
+@playlist_group.command(name="delete", description="Delete one of your playlists.")
+@app_commands.describe(name="Playlist name")
+@app_commands.autocomplete(name=_playlist_autocomplete)
+@rate_limit
+@storage_required
+async def playlist_delete(interaction: discord.Interaction, name: str):
+    await interaction.response.defer(ephemeral=True)
+    removed = await db.delete_playlist(interaction.user.id, name)
+    await interaction.followup.send("🗑️ Playlist deleted." if removed else "❌ You have no playlist with that name.", ephemeral=True)
+
+bot.tree.add_command(playlist_group)
 
 @tasks.loop(hours=Config.QUEUE_CLEANUP_HOURS)
 async def cleanup_inactive_queues():

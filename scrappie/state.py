@@ -26,8 +26,9 @@ class BotState:
         self.trivia_api_lock = asyncio.Lock()
         self.trivia_last_call = 0.0  # time.monotonic() of the last OpenTDB call
         self.queue_cleanup_task: Optional[Any] = None  # Set by music.py; stays None without voice support
-        self.weekly_reset_task: Optional[Any] = None  # Set by destiny.setup(); stays None without a key and channel
-        self.weekly_posted_reset: Optional[datetime.datetime] = None
+        self.reminder_task: Optional[Any] = None  # Set by reminders.py
+        self.weekly_reset_task: Optional[Any] = None  # Set by destiny.setup(); stays None without a key
+        self.weekly_posted: Dict[int, datetime.datetime] = {}  # Channel id -> last reset posted
         self.weekly_log_reset: Optional[datetime.datetime] = None
         self.weekly_logged: set = set()
         self.weekly_raids_ready: Optional[tuple] = None  # (reset, first time raids were fresh), starts the dungeon wait

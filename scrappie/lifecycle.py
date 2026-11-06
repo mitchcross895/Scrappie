@@ -17,10 +17,10 @@ from .web import start_flask_server
 # Commands register on import, and this order is the command tree order
 if VOICE_AVAILABLE:
     from . import music
-from . import general, trivia, weather
+from . import db, general, trivia, weather, reminders
 from .events import status_update_task
 
-__all__ = ["general", "music", "trivia", "weather"]  # Imported for their registration side effects
+__all__ = ["general", "music", "reminders", "trivia", "weather"]  # Imported for their registration side effects
 
 def validate_environment():
     token = os.getenv("DISCORD_TOKEN")
@@ -57,6 +57,12 @@ async def cleanup_resources():
     if weekly_reset is not None and weekly_reset.is_running():
         weekly_reset.cancel()
 
+    bot_state.weekly_posted.clear()
+    reminder = bot_state.reminder_task
+    if reminder is not None and reminder.is_running():
+        reminder.cancel()
+
+    db.close()
     await bot_state.cleanup()
 
     logger.info("✅ Cleanup complete")
@@ -113,6 +119,7 @@ def run():
     # Start Flask in a separate process
     flask_process = multiprocessing.Process(target=start_flask_server, daemon=True)
     flask_process.start()
+    db.init()  # After the start: an SQLite connection must not cross a fork
 
     # Start Discord bot in main process (so signal handling works properly)
     try:

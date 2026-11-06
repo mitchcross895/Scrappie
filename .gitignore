@@ -12,3 +12,9 @@ input/*xlsx
 
 # Claude Code
 CLAUDE.md
+
+# Local storage
+/data/
+*.db
+*.db-wal
+*.db-shm

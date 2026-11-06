@@ -16,10 +16,10 @@ from .state import bot_state
 from .utils import RequesterView, create_embed, format_duration, rate_limit, safe_api_request
 from .voice import VOICE_AVAILABLE
 
-FUN_HELP = "`/trivia [category] [difficulty] [questions]` - Trivia round\n`/fact` - Random fact\n`/dadjoke` - Random dad joke\n`/coin` - Flip coin\n`/roll [dice]` - Roll dice\n`/number <min> <max>` - Random number"
-UTILITY_HELP = "`/weather <city> [units]` - Weather info\n`/ping` - Bot latency\n`/help` - This message"
-MUSIC_HELP = "`/play <song>` - Play music\n`/queue` - View queue\n`/skip` - Skip song\n`/shuffle` - Shuffle queue\n`/loop <mode>` - Loop off, song or queue\n`/pause` - Pause\n`/resume` - Resume\n`/nowplaying` - Current song\n`/remove <position>` - Remove a queued song\n`/stop` - Stop & clear\n`/leave` - Leave voice"
-DESTINY_HELP = "`/item <name> [type]` - Weapon or armor lookup\n`/weekly` - Preview this week's raid and dungeon post\n`/raid <name>` - Raid drops and rotation\n`/dungeon <name>` - Dungeon drops and rotation"
+FUN_HELP = "`/trivia [category] [difficulty] [questions]` - Trivia round\n`/leaderboard` - Server trivia top 10\n`/fact` - Random fact\n`/dadjoke` - Random dad joke\n`/coin` - Flip coin\n`/roll [dice]` - Roll dice\n`/number <min> <max>` - Random number"
+UTILITY_HELP = "`/weather <city> [units]` - Weather info\n`/remind <time> <message>` - Set a reminder\n`/reminders` - List or cancel reminders\n`/ping` - Bot latency\n`/help` - This message"
+MUSIC_HELP = "`/play <song>` - Play music\n`/queue` - View queue\n`/skip` - Skip song\n`/shuffle` - Shuffle queue\n`/loop <mode>` - Loop off, song or queue\n`/pause` - Pause\n`/resume` - Resume\n`/nowplaying` - Current song\n`/remove <position>` - Remove a queued song\n`/stop` - Stop & clear\n`/leave` - Leave voice\n`/playlist save|load|list|delete` - Your saved playlists"
+DESTINY_HELP = "`/item <name> [type]` - Weapon or armor lookup\n`/weekly` - Preview this week's raid and dungeon post\n`/raid <name>` - Raid drops and rotation\n`/dungeon <name>` - Dungeon drops and rotation\n`/weeklysetup [channel] [enabled]` - Admin: weekly post settings"
 ALL_SECTIONS = "all"
 
 def _help_sections() -> Dict[str, str]:

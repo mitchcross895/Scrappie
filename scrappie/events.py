@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
+from . import db
 from .bot import bot
 from .log import logger
 from .state import bot_state, queue_key
@@ -39,6 +40,10 @@ async def on_ready():
     if weekly_reset is not None and not weekly_reset.is_running():
         weekly_reset.start()
 
+    reminder = bot_state.reminder_task
+    if reminder is not None and not reminder.is_running():
+        reminder.start()
+
 @bot.event
 async def on_guild_join(guild):
     logger.info(f'📥 Joined: {guild.name}')
@@ -58,6 +63,11 @@ async def on_guild_remove(guild):
     bot_state.music_queues.pop(guild_key, None)
     bot_state.end_music_session(guild_key)
     await bot_state.retire_now_playing(guild_key)
+    if db.available():
+        try:
+            await db.forget_guild(guild.id)
+        except db.StorageError:
+            logger.warning(f"Couldn't delete stored data for guild {guild.id}")
     await bot.change_presence(activity=servers_activity())
 
 @bot.event

@@ -8,11 +8,12 @@ import discord
 from discord import app_commands
 from discord.ui import Button, View
 
+from . import db
 from .bot import bot
 from .config import Config
 from .log import logger
 from .state import bot_state
-from .utils import RequesterView, create_embed, rate_limit, safe_api_request
+from .utils import RequesterView, create_embed, guild_required, rate_limit, safe_api_request, storage_required
 
 # Clip lengths that keep every embed inside Discord's limits even at 10 questions
 QUESTION_LIMIT = 1000
@@ -232,10 +233,9 @@ async def _edit_round(interaction: discord.Interaction, **kwargs) -> bool:
         logger.warning(f"Trivia round ended, could not edit its message: {e}")
         return False
 
-async def play_round(interaction: discord.Interaction, questions: List[dict], settings: RoundSettings):
+async def _ask_questions(interaction: discord.Interaction, questions: List[dict], settings: RoundSettings, results: list):
     user = interaction.user
     total = len(questions)
-    results = []
     score = 0
     timeouts_in_a_row = 0
 
@@ -260,6 +260,23 @@ async def play_round(interaction: discord.Interaction, questions: List[dict], se
             break
 
     await _edit_round(interaction, embed=_summary_embed(results, total, settings.category_name, settings.difficulty_name, user), view=PlayAgainView(interaction, settings))
+
+async def _record_round(interaction: discord.Interaction, results: List[Tuple[str, str, str]]):
+    """Never raises: storage must not touch a round. Checks availability first; DMs are not recorded."""
+    if not results or not db.available() or interaction.guild_id is None:
+        return
+    marks = [mark for mark, _, _ in results]
+    try:
+        await db.record_trivia_round(interaction.guild_id, interaction.user.id, [m == "✅" for m in marks], len(marks) - marks.count("⏰"))
+    except Exception as e:
+        logger.warning(f"Trivia score not saved for guild {interaction.guild_id} ({type(e).__name__})")
+
+async def play_round(interaction: discord.Interaction, questions: List[dict], settings: RoundSettings):
+    results = []
+    try:
+        await _ask_questions(interaction, questions, settings, results)
+    finally:  # Also runs on the early returns after a failed edit
+        await _record_round(interaction, results)
 
 async def run_round(interaction: discord.Interaction, settings: RoundSettings):
     data = await fetch_round(settings.amount, settings.category_id, settings.difficulty)
@@ -321,3 +338,16 @@ async def trivia_command(
         ))
     finally:
         bot_state.active_trivia.discard(user_id)
+
+@bot.tree.command(name="leaderboard", description="Show this server's trivia leaderboard.")
+@guild_required
+@rate_limit
+@storage_required
+async def leaderboard_command(interaction: discord.Interaction):
+    # No defer: a public defer would make a storage failure public, and the read is capped below 3 seconds
+    top, mine, rank = await db.leaderboard(interaction.guild_id, interaction.user.id)
+    lines = [f"**{i}.** <@{r.user_id}> - {r.points} pts, best streak {r.best_streak}" for i, r in enumerate(top, 1)]
+    embed = create_embed("🏆 Trivia Leaderboard", "\n".join(lines) or "No scores yet. Play `/trivia`!", discord.Color.gold())
+    you = f"#{rank} with {mine.points} pts, streak {mine.current_streak} (best {mine.best_streak})" if mine else "No points yet"
+    embed.add_field(name="Your rank", value=you, inline=False)
+    await interaction.response.send_message(embed=embed)

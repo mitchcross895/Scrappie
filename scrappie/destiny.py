@@ -7,17 +7,18 @@ import unicodedata
 from datetime import timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import List, NamedTuple, Optional
+from typing import Hashable, List, NamedTuple, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import tasks
 
+from . import db
 from .bot import bot
 from .config import Config
 from .log import logger
 from .state import bot_state
-from .utils import RequesterView, create_embed, rate_limit, safe_api_request
+from .utils import RequesterView, create_embed, guild_required, rate_limit, safe_api_request, storage_required
 
 DATA_DIR = Path(__file__).with_name("data")
 WEEKLY_MARKER = "Destiny 2 weekly reset"  # Footer start: how the duplicate check finds the bot's own post
@@ -531,7 +532,42 @@ async def raid_command(interaction: discord.Interaction, name: str):
 async def dungeon_command(interaction: discord.Interaction, name: str):
     await _send_activity(interaction, name, list(load_raids()["dungeons"]), dungeon_spec, "No dungeon matches that name.")
 
-def log_once(reset: datetime.datetime, reason: str, message: str) -> None:
+def _settings_text(settings, guild) -> str:
+    if settings is None:
+        env = channel_id()
+        if env is not None and guild.get_channel(env) is not None:
+            return f"No server setting. Using the host default, <#{env}>."
+        return "Not set up. Pick a channel to turn the weekly post on."
+    if not settings.weekly_enabled:
+        return "Off for this server."
+    return f"On, posting to <#{settings.weekly_channel_id}>."
+
+@app_commands.command(name="weeklysetup", description="Show or change this server's weekly Destiny post.")
+@app_commands.describe(channel="Channel for the weekly post", enabled="Turn the weekly post on or off")
+@app_commands.default_permissions(manage_guild=True)
+@guild_required
+@rate_limit
+@storage_required
+async def weeklysetup_command(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None, enabled: Optional[bool] = None):
+    if not interaction.permissions.manage_guild:  # Server admins can override default_permissions
+        return await interaction.response.send_message("❌ You need the Manage Server permission.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    settings = await db.get_settings(guild.id)
+    if channel is None and enabled is None:
+        return await interaction.followup.send(embed=create_embed("📅 Weekly Post", _settings_text(settings, guild), discord.Color.blurple()), ephemeral=True)
+    turn_on = enabled if enabled is not None else (True if channel else bool(settings and settings.weekly_enabled))
+    target = channel or (guild.get_channel(settings.weekly_channel_id) if settings and settings.weekly_channel_id else None)
+    if turn_on:
+        if target is None:
+            return await interaction.followup.send("❌ Pick a channel first.", ephemeral=True)
+        missing = missing_permissions(target, guild.me)
+        if missing:
+            return await interaction.followup.send(f"❌ I'm missing {', '.join(missing)} in {target.mention}.", ephemeral=True)
+    await db.set_settings(guild.id, target.id if target else None, turn_on)
+    await interaction.followup.send(embed=create_embed("✅ Weekly Post Updated", _settings_text(await db.get_settings(guild.id), guild), discord.Color.green()), ephemeral=True)
+
+def log_once(reset: datetime.datetime, reason: Hashable, message: str) -> None:
     """Log each reason once per reset, so a 10-minute loop can't spam."""
     if bot_state.weekly_log_reset != reset:
         bot_state.weekly_log_reset = reset
@@ -575,22 +611,29 @@ def channel_id() -> Optional[int]:
     value = (os.getenv("WEEKLY_RESET_CHANNEL_ID") or "").strip()
     return int(value) if value.isdecimal() else None
 
-async def get_weekly_channel(reset: datetime.datetime):
-    """The channel if it is usable; otherwise log once and return None."""
-    target = channel_id()
+async def resolve_channel(reset: datetime.datetime, target: int):
     try:
-        channel = bot.get_channel(target) or await bot.fetch_channel(target)
+        return bot.get_channel(target) or await bot.fetch_channel(target)
     except (discord.HTTPException, discord.InvalidData) as e:
-        log_once(reset, "channel", f"can't reach channel {target}: {e}")
+        log_once(reset, ("channel", target), f"can't reach channel {target}: {e}")
+        return None
+
+def missing_permissions(channel, member) -> List[str]:
+    permissions = channel.permissions_for(member)
+    return [p for p in REQUIRED_PERMISSIONS if not getattr(permissions, p)]
+
+async def get_weekly_channel(reset: datetime.datetime, target: int):
+    """The channel if it is usable; otherwise log once per channel and return None."""
+    channel = await resolve_channel(reset, target)
+    if channel is None:
         return None
     guild = getattr(channel, "guild", None)
     if guild is None or not hasattr(channel, "history"):
-        log_once(reset, "channel", f"channel {target} is not a server text channel")
+        log_once(reset, ("channel", target), f"channel {target} is not a server text channel")
         return None
-    permissions = channel.permissions_for(guild.me)
-    missing = [p for p in REQUIRED_PERMISSIONS if not getattr(permissions, p)]
+    missing = missing_permissions(channel, guild.me)
     if missing:
-        log_once(reset, "permissions", f"missing {', '.join(missing)} in channel {target}")
+        log_once(reset, ("permissions", target), f"missing {', '.join(missing)} in channel {target}")
         return None
     return channel
 
@@ -600,20 +643,59 @@ async def already_posted(channel, reset: datetime.datetime) -> bool:
             return True
     return False
 
+async def weekly_targets(reset: datetime.datetime) -> List[int]:
+    """Enabled rows plus the env channel when its guild has no row. A row that is off beats the env channel."""
+    env = channel_id()
+    if not db.available():
+        return [] if env is None else [env]
+    try:
+        rows = await db.weekly_rows()
+    except db.StorageError:
+        log_once(reset, "storage", "settings unreadable, skipping this tick")
+        return []  # Never post to a server that may have turned this off
+    targets = list(dict.fromkeys(r.weekly_channel_id for r in rows if r.weekly_enabled and r.weekly_channel_id is not None))
+    if env is None or env in targets:
+        return targets
+    if not rows or bot_state.weekly_posted.get(env) == reset:
+        return targets + [env]
+    channel = await resolve_channel(reset, env)
+    if channel is None:
+        return targets
+    guild = getattr(channel, "guild", None)
+    if guild is not None and guild.id in {r.guild_id for r in rows}:
+        return targets
+    return targets + [env]
+
+async def usable_channels(reset: datetime.datetime, pending: List[int]) -> List[tuple]:
+    """(target, channel) for each channel still needing the post. One bad channel can't block another."""
+    usable = []
+    for target in pending:
+        try:
+            channel = await get_weekly_channel(reset, target)
+            if channel is None:
+                continue
+            if await already_posted(channel, reset):
+                bot_state.weekly_posted[target] = reset
+                continue
+        except Exception as e:
+            log_once(reset, ("check", target), f"check failed for channel {target} ({type(e).__name__})")
+            continue
+        usable.append((target, channel))
+    return usable
+
 async def run_weekly_check(now: datetime.datetime) -> None:
     reset = latest_reset(now)
-    if bot_state.weekly_posted_reset == reset:
+    pending = [t for t in await weekly_targets(reset) if bot_state.weekly_posted.get(t) != reset]
+    if not pending:
         return
     if now - reset > datetime.timedelta(hours=Config.WEEKLY_CATCHUP_HOURS):
-        log_once(reset, "late", f"no post for {reset:%Y-%m-%d}, catch-up window passed")
+        for target in pending:
+            log_once(reset, ("late", target), f"no post for {reset:%Y-%m-%d}, catch-up window passed (channel {target})")
         return
-    channel = await get_weekly_channel(reset)
-    if channel is None:
+    usable = await usable_channels(reset, pending)
+    if not usable:
         return
-    if await already_posted(channel, reset):
-        bot_state.weekly_posted_reset = reset
-        return
-    milestones = await bungie_get("/Destiny2/Milestones/")
+    milestones = await bungie_get("/Destiny2/Milestones/")  # Once per tick, however many channels
     spec = weekly_from_milestones(milestones, f"{WEEKLY_MARKER} {reset:%Y-%m-%d}", reset) if milestones else None
     if spec is None:
         log_once(reset, "not_ready", "Bungie data not ready for this reset, will retry")
@@ -621,14 +703,15 @@ async def run_weekly_check(now: datetime.datetime) -> None:
     section = await get_dungeons(reset, dungeon_wait_over(now, reset))
     if section is not None and not section["ready"]:
         return  # A later tick retries; dungeon_wait_over bounds this
-    spec = add_dungeons(spec, section)
-    try:
-        await channel.send(embed=build_embed(spec))
-    except discord.HTTPException as e:
-        log_once(reset, "send", f"send failed: {e}")
-        return
-    bot_state.weekly_posted_reset = reset
-    logger.info(f"Weekly post sent for {reset:%Y-%m-%d} (dungeons: {section['status'] if section else 'omitted'})")
+    embed = build_embed(add_dungeons(spec, section))  # Outside the send loop: a bad embed is bad everywhere and reaches the loop's handler
+    for target, channel in usable:
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            log_once(reset, ("send", target), f"send failed: {e} (channel {target})")
+            continue
+        bot_state.weekly_posted[target] = reset
+        logger.info(f"Weekly post sent for {reset:%Y-%m-%d} to channel {target} (dungeons: {section['status'] if section else 'omitted'})")
 
 @tasks.loop(minutes=Config.WEEKLY_CHECK_MINUTES)
 async def weekly_reset_loop():
@@ -647,9 +730,9 @@ def setup() -> None:
         bot.tree.add_command(weekly_command)
         bot.tree.add_command(raid_command)
         bot.tree.add_command(dungeon_command)
+        bot.tree.add_command(weeklysetup_command)
     if profile_path() is None:
         logger.info("Live dungeon data disabled: DESTINY_MEMBERSHIP_TYPE or DESTINY_MEMBERSHIP_ID is unset, dungeons will be predicted")
     if channel_id() is None:
-        logger.info("Weekly Destiny post disabled: WEEKLY_RESET_CHANNEL_ID is unset or not a number")
-        return
+        logger.info("Weekly Destiny post disabled for the host channel: WEEKLY_RESET_CHANNEL_ID is unset or not a number. Servers can still use /weeklysetup")
     bot_state.weekly_reset_task = weekly_reset_loop

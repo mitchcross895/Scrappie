@@ -4,6 +4,7 @@ from typing import Optional
 
 import discord
 
+from . import db
 from .config import Config
 from .log import logger
 from .state import bot_state
@@ -86,4 +87,34 @@ def rate_limit(func):
             embed = create_embed("Rate Limited", "You're making requests too quickly. Please wait.", discord.Color.red())
             return await interaction.response.send_message(embed=embed, ephemeral=True)
         return await func(interaction, *args, **kwargs)
+    return wrapper
+
+def guild_required(func):
+    """Runtime check, not guild_only: a DM gets a friendly reply."""
+    @wraps(func)
+    async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return await func(interaction, *args, **kwargs)
+    return wrapper
+
+STORAGE_DOWN = "Storage is unavailable right now. Everything else still works, so try this again later."
+
+async def storage_down(interaction: discord.Interaction):
+    embed = create_embed("\U0001F4BE Storage Unavailable", STORAGE_DOWN, discord.Color.orange())
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+def storage_required(func):
+    """Innermost decorator. Commands stay registered without storage and reply privately instead."""
+    @wraps(func)
+    async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+        if not db.available():
+            return await storage_down(interaction)
+        try:
+            return await func(interaction, *args, **kwargs)
+        except db.StorageError:
+            return await storage_down(interaction)
     return wrapper
