@@ -33,12 +33,18 @@ def validate_environment():
     return token
 
 async def cleanup_resources():
-    """Runs before bot.close(): queues must be empty before voice disconnects, or after_play starts the next song."""
+    """Runs before bot.close(): queues and loop state must be gone before voice disconnects, or after_play starts the next song."""
     logger.info("🧹 Cleaning up resources...")
 
     bot_state.music_queues.clear()
     bot_state.request_counts.clear()
     bot_state.now_playing.clear()
+    for guild_key in list(bot_state.idle_tasks): bot_state.cancel_idle(guild_key)
+    bot_state.loop_modes.clear()
+    bot_state.current_tracks.clear()
+    bot_state.skip_requested.clear()
+    bot_state.now_playing_messages.clear()
+    bot_state.track_timing.clear()
 
     if status_update_task.is_running():
         status_update_task.cancel()

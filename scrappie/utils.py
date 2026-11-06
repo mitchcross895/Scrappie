@@ -4,6 +4,7 @@ from typing import Optional
 
 import discord
 
+from .config import Config
 from .log import logger
 from .state import bot_state
 
@@ -40,6 +41,43 @@ def format_duration(seconds: int) -> str:
     elif seconds < 3600:
         return f"{seconds//60}m {seconds%60}s"
     return f"{seconds//3600}h {(seconds%3600)//60}m {seconds%60}s"
+
+class BotView(discord.ui.View):
+    """Base for the bot's views: View errors never reach bot.tree.error."""
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item, /):
+        logger.error(f"View error in {type(self).__name__}: {error}", exc_info=error)
+        embed = create_embed("💥 Error", "Unexpected error. Try later.", discord.Color.red())
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Couldn't send error message: {e}")
+
+class RequesterView(BotView):
+    """Only the person who ran the command can use it. Edits through the interaction, so it also works on ephemeral messages."""
+    def __init__(self, interaction: discord.Interaction, timeout: float = Config.VIEW_TIMEOUT):
+        super().__init__(timeout=timeout)
+        self.interaction = interaction
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.interaction.user.id:
+            return True
+        await interaction.response.send_message("Only the person who ran this can use it.", ephemeral=True)
+        return False
+
+    async def close(self):
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        try:
+            await self.interaction.edit_original_response(view=self)
+        except Exception as e:
+            logger.warning(f"Couldn't disable an expired view: {e}")
+
+    async def on_timeout(self):
+        await self.close()
 
 def rate_limit(func):
     @wraps(func)

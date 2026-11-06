@@ -1,6 +1,8 @@
 import asyncio
 import random
+import time
 from collections import deque
+from functools import wraps
 
 import discord
 import yt_dlp
@@ -11,7 +13,7 @@ from .bot import bot
 from .config import Config
 from .log import logger
 from .state import bot_state, queue_key
-from .utils import create_embed, format_duration, rate_limit
+from .utils import BotView, RequesterView, create_embed, format_duration, rate_limit
 
 ytdl_format_options = {
     'format': 'bestaudio[ext=webm]/bestaudio/best',
@@ -73,13 +75,44 @@ class YTDLSource(discord.PCMVolumeTransformer):
 def is_active(voice_client) -> bool:
     return voice_client.is_playing() or voice_client.is_paused()
 
+def _pause_playback(voice_client, guild_key):
+    voice_client.pause()  # Fires no after_play, so loop and skip state are untouched
+    timing = bot_state.track_timing.get(guild_key)
+    if timing:
+        timing["paused_at"] = time.monotonic()
+
+def _resume_playback(voice_client, guild_key):
+    voice_client.resume()
+    timing = bot_state.track_timing.get(guild_key)
+    if timing and timing["paused_at"] is not None:
+        timing["started"] += time.monotonic() - timing["paused_at"]
+        timing["paused_at"] = None
+
+def _elapsed_seconds(guild_key) -> int:
+    timing = bot_state.track_timing[guild_key]
+    end = timing["paused_at"] if timing["paused_at"] is not None else time.monotonic()
+    return int(end - timing["started"])
+
+def guild_required(func):
+    """Runtime check, not guild_only: a DM gets a friendly reply."""
+    @wraps(func)
+    async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return await func(interaction, *args, **kwargs)
+    return wrapper
+
 async def connected_voice_client(interaction: discord.Interaction):
     """Return the guild's connected voice client, or None after replying with the error."""
-    voice_client = interaction.guild.voice_client  # Raises in DMs, reaching on_app_command_error
+    voice_client = interaction.guild.voice_client
     if not voice_client or not voice_client.is_connected():
         await interaction.response.send_message("❌ Not in voice channel!", ephemeral=True)
         return None
     return voice_client
+
+def _log_next_song_failure(fut):
+    if not fut.cancelled() and fut.exception():
+        logger.error(f"Error scheduling next: {fut.exception()}")
 
 def _make_after_play(player, title, voice_client, guild_key, channel):
     def after_play(error):
@@ -91,38 +124,129 @@ def _make_after_play(player, title, voice_client, guild_key, channel):
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
 
-        fut = asyncio.run_coroutine_threadsafe(
-            play_next_song(voice_client, guild_key, channel),
-            bot.loop
-        )
-        try:
-            fut.result(timeout=5)
-        except Exception as e:
-            logger.error(f"Error scheduling next: {e}")
+        fut = asyncio.run_coroutine_threadsafe(play_next_song(voice_client, guild_key, channel), bot.loop)
+        fut.add_done_callback(_log_next_song_failure)
     return after_play
 
 def _now_playing_embed(title, player, guild_key) -> discord.Embed:
     embed = create_embed("🎵 Now Playing", f"**{title}**", discord.Color.blue())
     if player.duration:
         embed.add_field(name="Duration", value=format_duration(int(player.duration)), inline=True)
-    if bot_state.music_queues[guild_key]:  # KeyError if on_voice_state_update popped it: caught by play_next_song
-        embed.add_field(name="Up Next", value=f"{len(bot_state.music_queues[guild_key])} songs", inline=True)
+    queue = bot_state.music_queues.get(guild_key)
+    if queue:
+        embed.add_field(name="Up Next", value=f"{len(queue)} songs", inline=True)
     return embed
+
+class NowPlayingView(BotView):
+    def __init__(self, voice_client, guild_key: str, title: str):
+        super().__init__(timeout=None)  # Lost on restart, which is acceptable
+        self.voice_client, self.guild_key, self.title = voice_client, guild_key, title
+        self.sync_pause_button()
+
+    def sync_pause_button(self):
+        paused = self.voice_client.is_paused()
+        self.toggle.label, self.toggle.emoji = ("Resume", "\u25b6\ufe0f") if paused else ("Pause", "\u23f8\ufe0f")
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not self.voice_client.is_connected() or bot_state.now_playing.get(self.guild_key) != self.title:
+            await interaction.response.send_message("That song has finished.", ephemeral=True)
+            return False
+        voice = getattr(interaction.user, "voice", None)
+        if not voice or voice.channel != self.voice_client.channel:
+            await interaction.response.send_message("\u274c Join my voice channel to use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary)
+    async def toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.voice_client.is_paused():
+            _resume_playback(self.voice_client, self.guild_key)
+        elif self.voice_client.is_playing():
+            _pause_playback(self.voice_client, self.guild_key)
+        else:
+            return await interaction.response.send_message("\u274c Nothing playing!", ephemeral=True)
+        self.sync_pause_button()
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.primary, emoji="\u23ed\ufe0f")
+    async def skip(self, interaction, button):
+        await _send_skip(interaction, self.voice_client)
+
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, emoji="\u23f9\ufe0f")
+    async def stop_button(self, interaction, button):
+        await _send_stop(interaction, self.voice_client)
+
+    @discord.ui.button(label="Shuffle", style=discord.ButtonStyle.secondary, emoji="\U0001F500")
+    async def shuffle(self, interaction, button):
+        await _send_shuffle(interaction)
+
+async def _sync_pause_button(guild_key):
+    entry = bot_state.now_playing_messages.get(guild_key)
+    if entry:
+        entry[1].sync_pause_button()
+        try:
+            await entry[0].edit(view=entry[1])
+        except Exception as e:
+            logger.warning(f"Couldn't update Now Playing buttons: {e}")
+
+async def _post_now_playing(voice_client, guild_key, channel, title, player):
+    await bot_state.retire_now_playing(guild_key)
+    view = NowPlayingView(voice_client, guild_key, title)
+    message = await channel.send(embed=_now_playing_embed(title, player, guild_key), view=view)
+    bot_state.now_playing_messages[guild_key] = (message, view)
+    if bot_state.now_playing.get(guild_key) != title:  # The session ended during the send
+        await bot_state.retire_now_playing(guild_key)
+
+def _apply_loop_mode(guild_key: str):
+    """Runs before the empty-queue check, so a looped last song keeps playing. Always re-reads the deque: /shuffle replaces it."""
+    finished = bot_state.current_tracks.pop(guild_key, None)
+    skipped = guild_key in bot_state.skip_requested
+    bot_state.skip_requested.discard(guild_key)
+    mode = bot_state.loop_modes.get(guild_key)
+    queue = bot_state.music_queues.get(guild_key)
+    if finished is None or queue is None:
+        return
+    if mode == "song" and not skipped:
+        queue.appendleft(finished)
+    elif mode == "queue":
+        queue.append(finished)
+
+async def _idle_disconnect(voice_client, guild_key, channel):
+    await asyncio.sleep(Config.MUSIC_IDLE_SECONDS)
+    bot_state.idle_tasks.pop(guild_key, None)  # First: disconnecting fires on_voice_state_update, which must not cancel this task mid-send
+    if not voice_client.is_connected() or is_active(voice_client) or bot_state.music_queues.get(guild_key):
+        return
+    try:
+        await voice_client.disconnect()
+        await channel.send(embed=create_embed("👋 Queue Finished", "Nothing left to play. Disconnecting...", discord.Color.blue()))
+    except Exception as e:
+        logger.error(f"Idle disconnect error: {e}")
+
+async def _go_idle(voice_client, guild_key, channel):
+    """Nothing to play: forget the finished song and start the timer."""
+    if is_active(voice_client) or not voice_client.is_connected() or bot.is_closed():
+        return
+    bot_state.current_tracks.pop(guild_key, None)
+    bot_state.now_playing.pop(guild_key, None)
+    bot_state.track_timing.pop(guild_key, None)
+    bot_state.cancel_idle(guild_key)
+    bot_state.idle_tasks[guild_key] = asyncio.create_task(_idle_disconnect(voice_client, guild_key, channel))
+    await bot_state.retire_now_playing(guild_key)
 
 async def play_next_song(voice_client, guild_key, channel):
     try:
+        bot_state.cancel_idle(guild_key)
         if not voice_client or not voice_client.is_connected():
             return
 
-        if guild_key not in bot_state.music_queues or not bot_state.music_queues[guild_key]:
-            await asyncio.sleep(3)
-            if voice_client.is_connected():
-                await voice_client.disconnect()
-                embed = create_embed("👋 Queue Finished", "All songs played. Disconnecting...", discord.Color.blue())
-                await channel.send(embed=embed)
+        _apply_loop_mode(guild_key)
+
+        if not bot_state.music_queues.get(guild_key):
+            await _go_idle(voice_client, guild_key, channel)
             return
 
-        video_url, title = bot_state.music_queues[guild_key].popleft()
+        track = bot_state.music_queues[guild_key].popleft()
+        video_url, title = track
 
         try:
             player = await asyncio.wait_for(
@@ -137,8 +261,10 @@ async def play_next_song(voice_client, guild_key, channel):
 
             voice_client.play(player, after=after_play)
             bot_state.now_playing[guild_key] = title
+            bot_state.current_tracks[guild_key] = track  # Only after play: a track that fails is dropped, so loops always end
 
-            await channel.send(embed=_now_playing_embed(title, player, guild_key))
+            bot_state.track_timing[guild_key] = {"started": time.monotonic(), "paused_at": None, "duration": player.duration}
+            await _post_now_playing(voice_client, guild_key, channel, title, player)
 
         except Exception as e:
             logger.error(f"Error playing {title}: {e}")
@@ -147,11 +273,14 @@ async def play_next_song(voice_client, guild_key, channel):
             await asyncio.sleep(1)
             if bot_state.music_queues.get(guild_key):
                 await play_next_song(voice_client, guild_key, channel)
+            else:
+                await _go_idle(voice_client, guild_key, channel)
 
     except Exception as e:
         logger.exception(f"Unexpected error in play_next_song: {e}")
         if guild_key in bot_state.music_queues:
             bot_state.music_queues[guild_key].clear()
+        await _go_idle(voice_client, guild_key, channel)
         embed = create_embed("💥 Fatal Error", "Music playback failed. Queue cleared.", discord.Color.dark_red())
         await channel.send(embed=embed)
 
@@ -234,6 +363,7 @@ async def _enqueue_single_track(interaction: discord.Interaction, song_query: st
 
 @bot.tree.command(name="play", description="Play a song or add it to queue. Supports playlists!")
 @app_commands.describe(song_query="Search query or YouTube URL (supports playlists)")
+@guild_required
 @rate_limit
 async def play_command(interaction: discord.Interaction, song_query: str):
     await interaction.response.defer()
@@ -244,6 +374,7 @@ async def play_command(interaction: discord.Interaction, song_query: str):
     voice_client = await _ensure_voice_connection(interaction)  # Outside the try: failures reach on_app_command_error
 
     guild_key = queue_key(interaction.guild_id)
+    bot_state.cancel_idle(guild_key)
     bot_state.music_queues.setdefault(guild_key, deque())
 
     is_url, is_playlist_url = _classify_query(song_query)
@@ -256,80 +387,119 @@ async def play_command(interaction: discord.Interaction, song_query: str):
     except Exception as e:
         logger.error(f"Error in play command: {e}")
         await interaction.followup.send("❌ Couldn't play that. Try a different search.")
+    finally:
+        if not bot_state.music_queues.get(guild_key):  # A failed request must not leave the bot connected with no timer
+            await _go_idle(voice_client, guild_key, interaction.channel)
+
+async def _send_stop(interaction, voice_client):
+    guild_key = queue_key(interaction.guild_id)
+    if is_active(voice_client):
+        voice_client.stop()
+    if guild_key in bot_state.music_queues:
+        bot_state.music_queues[guild_key].clear()
+    bot_state.end_music_session(guild_key)  # Same tick as stop(): after_play's call runs later and finds nothing to loop
+
+    embed = create_embed("⏹️ Music Stopped", "Playback stopped and queue cleared.", discord.Color.orange())
+    await interaction.response.send_message(embed=embed)
+    await bot_state.retire_now_playing(guild_key)
+    await _go_idle(voice_client, guild_key, interaction.channel)  # No after_play when nothing was playing
 
 @bot.tree.command(name="stop", description="Stop and clear queue.")
+@guild_required
 async def stop_command(interaction: discord.Interaction):
     voice_client = await connected_voice_client(interaction)
     if voice_client is None:
         return
-
-    if is_active(voice_client):
-        voice_client.stop()
-
-    guild_key = queue_key(interaction.guild_id)
-    if guild_key in bot_state.music_queues:
-        bot_state.music_queues[guild_key].clear()
-
-    embed = create_embed("⏹️ Music Stopped", "Playback stopped and queue cleared.", discord.Color.orange())
-    await interaction.response.send_message(embed=embed)
+    await _send_stop(interaction, voice_client)
 
 @bot.tree.command(name="leave", description="Leave voice channel.")
+@guild_required
 async def leave_command(interaction: discord.Interaction):
     voice_client = await connected_voice_client(interaction)
     if voice_client is None:
         return
 
     channel_name = voice_client.channel.name
+    guild_key = queue_key(interaction.guild_id)
+    bot_state.end_music_session(guild_key)
     await voice_client.disconnect()
 
-    guild_key = queue_key(interaction.guild_id)
     if guild_key in bot_state.music_queues:
         bot_state.music_queues[guild_key].clear()
 
     embed = create_embed("👋 Left Voice Channel", f"Disconnected from **{channel_name}**", discord.Color.blue())
     await interaction.response.send_message(embed=embed)
+    await bot_state.retire_now_playing(guild_key)
 
-@bot.tree.command(name="queue", description="View music queue.")
-async def queue_command(interaction: discord.Interaction):
-    guild_key = queue_key(interaction.guild_id)
-    voice_client = interaction.guild.voice_client
+def _queue_page(guild_key, voice_client, page: int) -> tuple:
+    """Return (embed, page, pages), read fresh on every press: songs leave the queue and /shuffle replaces the deque."""
+    titles = [title for _, title in bot_state.music_queues.get(guild_key) or ()]
     is_playing = voice_client and is_active(voice_client)
     current_song = bot_state.now_playing.get(guild_key)
-
-    if not is_playing and (guild_key not in bot_state.music_queues or not bot_state.music_queues[guild_key]):
-        embed = create_embed("📋 Queue Empty", "No songs. Use `/play` to add!", discord.Color.orange())
-        return await interaction.response.send_message(embed=embed)
-
-    embed = create_embed("🎵 Music Queue", "", discord.Color.blue())
-
+    if not is_playing and not titles:
+        return create_embed("\U0001F4CB Queue Empty", "No songs. Use `/play` to add!", discord.Color.orange()), 0, 1
+    size = Config.QUEUE_PAGE_SIZE
+    pages = max(1, -(-len(titles) // size))
+    page = max(0, min(page, pages - 1))
+    embed = create_embed("\U0001F3B5 Music Queue", "", discord.Color.blue())
     if is_playing and current_song:
-        embed.add_field(name="▶️ Now Playing", value=current_song[:100], inline=False)
+        embed.add_field(name="\u25b6\ufe0f Now Playing", value=current_song[:100], inline=False)
+    start = page * size
+    for idx, title in enumerate(titles[start:start + size], start + 1):
+        embed.add_field(name=f"#{idx}", value=title[:100], inline=False)
+    if pages > 1:
+        embed.set_footer(text=f"Page {page + 1}/{pages}")
+    return embed, page, pages
 
-    if guild_key in bot_state.music_queues and bot_state.music_queues[guild_key]:
-        queue = bot_state.music_queues[guild_key]
-        for idx, (_, title) in enumerate(list(queue)[:10], 1):
-            embed.add_field(name=f"#{idx}", value=title[:100], inline=False)
+class QueueView(RequesterView):
+    def __init__(self, interaction: discord.Interaction, pages: int):
+        super().__init__(interaction)
+        self.page = 0
+        self._sync(pages)
 
-        if len(queue) > 10:
-            embed.set_footer(text=f"... and {len(queue) - 10} more")
+    def _sync(self, pages: int):
+        self.previous_page.disabled = self.page == 0
+        self.next_page.disabled = self.page >= pages - 1
 
+    async def _show(self, interaction, page: int):
+        embed, self.page, pages = _queue_page(queue_key(interaction.guild_id), interaction.guild.voice_client, page)
+        self._sync(pages)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction, button):
+        await self._show(interaction, self.page - 1)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction, button):
+        await self._show(interaction, self.page + 1)
+
+@bot.tree.command(name="queue", description="View music queue.")
+@guild_required
+async def queue_command(interaction: discord.Interaction):
+    embed, _, pages = _queue_page(queue_key(interaction.guild_id), interaction.guild.voice_client, 0)
+    if pages > 1:
+        return await interaction.response.send_message(embed=embed, view=QueueView(interaction, pages))
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="skip", description="Skip current song.")
-async def skip_command(interaction: discord.Interaction):
-    voice_client = await connected_voice_client(interaction)
-    if voice_client is None:
-        return
-
+async def _send_skip(interaction, voice_client):
     if not is_active(voice_client):
         return await interaction.response.send_message("❌ Nothing playing!", ephemeral=True)
 
+    bot_state.skip_requested.add(queue_key(interaction.guild_id))
     voice_client.stop()
     embed = create_embed("⏭️ Skipped", "Skipped to next song!", discord.Color.blue())
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="shuffle", description="Shuffle the music queue.")
-async def shuffle_command(interaction: discord.Interaction):
+@bot.tree.command(name="skip", description="Skip current song.")
+@guild_required
+async def skip_command(interaction: discord.Interaction):
+    voice_client = await connected_voice_client(interaction)
+    if voice_client is None:
+        return
+    await _send_skip(interaction, voice_client)
+
+async def _send_shuffle(interaction):
     guild_key = queue_key(interaction.guild_id)
     queue = bot_state.music_queues.get(guild_key)
 
@@ -357,6 +527,87 @@ async def shuffle_command(interaction: discord.Interaction):
         embed = create_embed("❌ Shuffle Error", "Couldn't shuffle the queue.", discord.Color.red())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="shuffle", description="Shuffle the music queue.")
+@guild_required
+async def shuffle_command(interaction: discord.Interaction):
+    await _send_shuffle(interaction)
+
+LOOP_CHOICES = [app_commands.Choice(name="Off", value="off"), app_commands.Choice(name="Song", value="song"), app_commands.Choice(name="Queue", value="queue")]
+
+@bot.tree.command(name="loop", description="Loop the current song or the whole queue.")
+@app_commands.describe(mode="Off, the current song, or the whole queue")
+@app_commands.choices(mode=LOOP_CHOICES)
+@guild_required
+async def loop_command(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    voice_client = await connected_voice_client(interaction)  # Connected only: the session end is what resets the mode
+    if voice_client is None:
+        return
+    guild_key = queue_key(interaction.guild_id)
+    if mode.value == "off":
+        bot_state.loop_modes.pop(guild_key, None)
+    else:
+        bot_state.loop_modes[guild_key] = mode.value
+    await interaction.response.send_message(embed=create_embed("🔁 Loop", f"Loop mode: **{mode.name}**", discord.Color.blue()))
+
+@bot.tree.command(name="pause", description="Pause the current song.")
+@guild_required
+async def pause_command(interaction: discord.Interaction):
+    voice_client = await connected_voice_client(interaction)
+    if voice_client is None:
+        return
+    if voice_client.is_paused():
+        return await interaction.response.send_message("Already paused.", ephemeral=True)
+    if not voice_client.is_playing():
+        return await interaction.response.send_message("\u274c Nothing playing!", ephemeral=True)
+    guild_key = queue_key(interaction.guild_id)
+    _pause_playback(voice_client, guild_key)
+    await interaction.response.send_message(embed=create_embed("\u23f8\ufe0f Paused", "Use `/resume` to continue.", discord.Color.blue()))
+    await _sync_pause_button(guild_key)
+
+@bot.tree.command(name="resume", description="Resume the paused song.")
+@guild_required
+async def resume_command(interaction: discord.Interaction):
+    voice_client = await connected_voice_client(interaction)
+    if voice_client is None:
+        return
+    if not voice_client.is_paused():
+        return await interaction.response.send_message("Not paused.", ephemeral=True)
+    guild_key = queue_key(interaction.guild_id)
+    _resume_playback(voice_client, guild_key)
+    await interaction.response.send_message(embed=create_embed("\u25b6\ufe0f Resumed", "Playback resumed.", discord.Color.blue()))
+    await _sync_pause_button(guild_key)
+
+@bot.tree.command(name="nowplaying", description="Show the current song and how far along it is.")
+@guild_required
+async def nowplaying_command(interaction: discord.Interaction):
+    voice_client = interaction.guild.voice_client
+    guild_key = queue_key(interaction.guild_id)
+    title = bot_state.now_playing.get(guild_key)
+    if not voice_client or not is_active(voice_client) or not title or guild_key not in bot_state.track_timing:
+        return await interaction.response.send_message("\u274c Nothing playing!", ephemeral=True)
+    embed = create_embed("\U0001F3B5 Now Playing", f"**{title}**", discord.Color.blue())
+    elapsed = format_duration(_elapsed_seconds(guild_key))
+    duration = bot_state.track_timing[guild_key]["duration"]
+    embed.add_field(name="Elapsed", value=f"{elapsed} / {format_duration(int(duration))}" if duration else elapsed, inline=True)
+    embed.add_field(name="Loop", value=bot_state.loop_modes.get(guild_key, "off").capitalize(), inline=True)
+    if voice_client.is_paused():
+        embed.set_footer(text="Paused")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="remove", description="Remove a song from the queue.")
+@app_commands.describe(position="Queue position to remove (see /queue)")
+@guild_required
+async def remove_command(interaction: discord.Interaction, position: app_commands.Range[int, 1]):
+    queue = bot_state.music_queues.get(queue_key(interaction.guild_id))
+    if not queue:
+        embed = create_embed("\U0001F4CB Queue Empty", "No songs to remove. Use `/play` to add.", discord.Color.orange())
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    if position > len(queue):
+        return await interaction.response.send_message(f"\u274c Position must be 1 to {len(queue)}.", ephemeral=True)
+    _, title = queue[position - 1]
+    del queue[position - 1]  # No await between read and delete
+    await interaction.response.send_message(embed=create_embed("\U0001F5D1\ufe0f Removed", f"**{title[:100]}**", discord.Color.green()))
+
 @tasks.loop(hours=Config.QUEUE_CLEANUP_HOURS)
 async def cleanup_inactive_queues():
     """Drop queues for guilds the bot left or has no voice client in."""
@@ -366,7 +617,8 @@ async def cleanup_inactive_queues():
         guild = bot.get_guild(int(guild_id))
         if not guild or not guild.voice_client:
             bot_state.music_queues.pop(guild_id, None)
-            bot_state.now_playing.pop(guild_id, None)
+            bot_state.end_music_session(guild_id)
+            await bot_state.retire_now_playing(guild_id)
             cleaned += 1
 
     if cleaned > 0:

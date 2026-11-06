@@ -56,6 +56,8 @@ async def on_guild_remove(guild):
     logger.info(f'📤 Left: {guild.name}')
     guild_key = queue_key(guild.id)
     bot_state.music_queues.pop(guild_key, None)
+    bot_state.end_music_session(guild_key)
+    await bot_state.retire_now_playing(guild_key)
     await bot.change_presence(activity=servers_activity())
 
 @bot.event
@@ -85,6 +87,8 @@ async def on_voice_state_update(member, before, after):
     if before.channel and not after.channel:
         guild_key = queue_key(before.channel.guild.id)
         bot_state.music_queues.pop(guild_key, None)
+        bot_state.end_music_session(guild_key)
+        await bot_state.retire_now_playing(guild_key)
 
 @tasks.loop(minutes=30)
 async def status_update_task():

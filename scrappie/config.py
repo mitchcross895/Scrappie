@@ -24,3 +24,9 @@ class Config:
     WEEKLY_HISTORY_LIMIT = 100  # Messages scanned for an existing post
     WEEKLY_DUNGEON_WAIT_MINUTES = 30  # Longest the post waits for confirmed dungeons once raids are fresh
     WEEKLY_EMBED_LIMIT = 5900  # Discord allows 6000 per message; this keeps a margin
+    MUSIC_IDLE_SECONDS = 120  # Silence before the bot leaves voice
+    VIEW_TIMEOUT = 300  # Seconds before requester-limited views disable
+    QUEUE_PAGE_SIZE = 10
+    DICE_MAX_COUNT = 100
+    DICE_MAX_SIDES = 1000
+    DICE_MAX_MODIFIER = 1000

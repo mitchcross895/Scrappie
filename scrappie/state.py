@@ -16,6 +16,12 @@ class BotState:
         self.music_queues: Dict[str, deque] = {}
         self.request_counts: Dict[int, List] = {}
         self.now_playing: Dict[str, Optional[str]] = {}
+        self.loop_modes: Dict[str, str] = {}  # "song" or "queue"; a missing key means off
+        self.current_tracks: Dict[str, tuple] = {}  # The playing (url, title); a looped song comes back from here
+        self.skip_requested: set = set()  # Guild keys whose next stop is a skip, so loop song doesn't replay it
+        self.idle_tasks: Dict[str, asyncio.Task] = {}
+        self.now_playing_messages: Dict[str, tuple] = {}  # (message, view)
+        self.track_timing: Dict[str, dict] = {}
         self.active_trivia: set = set()  # User ids with a round running
         self.trivia_api_lock = asyncio.Lock()
         self.trivia_last_call = 0.0  # time.monotonic() of the last OpenTDB call
@@ -25,6 +31,34 @@ class BotState:
         self.weekly_log_reset: Optional[datetime.datetime] = None
         self.weekly_logged: set = set()
         self.weekly_raids_ready: Optional[tuple] = None  # (reset, first time raids were fresh), starts the dungeon wait
+
+    def cancel_idle(self, guild_key: str):
+        task = self.idle_tasks.pop(guild_key, None)
+        if task is not None:
+            task.cancel()
+
+    def end_music_session(self, guild_key: str):
+        """Synchronous on purpose: callers run it with no await after stopping, so a queued play_next_song finds nothing to loop."""
+        self.cancel_idle(guild_key)
+        self.now_playing.pop(guild_key, None)
+        self.current_tracks.pop(guild_key, None)
+        self.loop_modes.pop(guild_key, None)
+        self.skip_requested.discard(guild_key)
+        self.track_timing.pop(guild_key, None)
+
+    async def retire_now_playing(self, guild_key: str):
+        """Disable the buttons. Stopping the view matters: timeout=None views otherwise stay in discord.py's store forever."""
+        entry = self.now_playing_messages.pop(guild_key, None)
+        if entry is None:
+            return
+        message, view = entry
+        view.stop()
+        for child in view.children:
+            child.disabled = True
+        try:
+            await message.edit(view=view)
+        except Exception as e:
+            logger.warning(f"Couldn't disable Now Playing buttons: {e}")
 
     async def initialize(self):
         await self.get_http_session()

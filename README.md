@@ -4,27 +4,33 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 
 - **Music (voice)**
 	- `/play <query|url>` — Play a song or add to the guild queue. Supports playlists.
-	- `/queue` — View the current music queue.
+	- `/queue` — View the current music queue (paged, 10 per page).
 	- `/skip` — Skip the currently playing track.
 	- `/stop` — Stop playback and clear the queue.
 	- `/leave` — Disconnect the bot from voice.
 	- `/shuffle` — Shuffle the current guild queue (randomizes upcoming tracks).
+	- `/pause`, `/resume` — Pause and resume the current song (also buttons on the Now Playing message).
+	- `/nowplaying` — Current song with elapsed time and loop mode.
+	- `/remove <position>` — Remove one queued song.
+	- `/loop <off|song|queue>` — Loop the current song or the whole queue. The bot leaves voice after 2 minutes of silence.
 
 - **Trivia / Games**
-	- `/trivia` — Trivia rounds of 1 to 10 questions with optional category and difficulty, time-limited buttons, and an end summary.
+	- `/trivia` — Trivia rounds of 1 to 10 questions with optional category and difficulty, time-limited buttons, an end summary, and a Play Again button that repeats the same settings.
 	- `/fact` — Return a random fact.
 	- `/dadjoke` — Return a random dad joke.
 	- `/coin` — Flip a coin (Heads/Tails).
+	- `/roll [dice]` — Roll dice in NdS+M notation, like `2d6+1` (default `1d6`).
 	- `/number <min> <max>` — Generate a random integer in the specified range.
 
 - **Utilities**
-	- `/weather <city>` — Fetches current weather and a short forecast (uses `python_weather`).
+	- `/weather <city> [units]` — Fetches current weather and a short forecast (uses `python_weather`). Units are Fahrenheit by default or Celsius.
 	- `/ping` — Returns latency, uptime, guild/user counts.
-	- `/help` — Shows a command summary.
+	- `/help` — Shows a command summary with a dropdown to pick one section.
 
 - **Destiny 2** (needs `BUNGIE_API_KEY`)
-	- `/item <name>` — Weapon or armor lookup with autocomplete and a light.gg link.
-	- `/weekly` — Private preview of the weekly raid and dungeon post.
+	- `/item <name> [type]` — Weapon or armor lookup with autocomplete and a light.gg link. The optional type limits the search to weapons or armor.
+	- `/weekly` — Private preview of the weekly raid and dungeon post, with a Next week button for the predicted rotation.
+	- `/raid <name>` and `/dungeon <name>` — Drops, armor set bonuses and the predicted rotation for one raid or dungeon. Local data only, so no Bungie call.
 	- Automatic weekly post at Tuesday 17:00 UTC (11am CST, 12pm CDT) with the featured raids and dungeons, modifiers, drops, set bonuses and a labelled one-week prediction. Dungeons and the forecast are labelled predicted when Bungie has not confirmed them. Needs `WEEKLY_RESET_CHANNEL_ID`.
 
 - **Web health**
@@ -48,7 +54,7 @@ This repository contains a Discord bot (and a small Flask health endpoint) with 
 
 - `DISCORD_TOKEN` (required) — Bot token used to connect to Discord.
 - `PORT` (optional) — Port for the Flask health server (default: 5000).
-- `BUNGIE_API_KEY` (optional) — Enables `/item`, `/weekly` and the weekly post. Get one at bungie.net/en/Application.
+- `BUNGIE_API_KEY` (optional) — Enables `/item`, `/weekly`, `/raid`, `/dungeon` and the weekly post. Get one at bungie.net/en/Application.
 - `WEEKLY_RESET_CHANNEL_ID` (optional) — Channel for the automatic weekly post. Without it the commands still work and nothing is posted.
 - `DESTINY_MEMBERSHIP_TYPE` and `DESTINY_MEMBERSHIP_ID` (optional, set both) — The account whose public activity data confirms the week's dungeons. Without them the post shows predicted dungeons, and `/item` and the raids still work. Set both on the host, because `.env` is not deployed.
 

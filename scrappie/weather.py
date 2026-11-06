@@ -1,3 +1,5 @@
+from typing import Any, NamedTuple, Optional
+
 import discord
 import python_weather
 from discord import app_commands
@@ -8,10 +10,20 @@ from .config import Config
 from .log import logger
 from .utils import create_embed, rate_limit
 
+class Units(NamedTuple):
+    client: Any; temp: str; speed: str; rain: str; pressure: str; distance: str; celsius: bool
+
+UNITS = {
+    "fahrenheit": Units(python_weather.IMPERIAL, "\u00b0F", "mph", "in", "inHg", "mi", False),
+    "celsius": Units(python_weather.METRIC, "\u00b0C", "km/h", "mm", "hPa", "km", True),
+}
+UNIT_CHOICES = [app_commands.Choice(name="Fahrenheit", value="fahrenheit"), app_commands.Choice(name="Celsius", value="celsius")]
+
 @bot.tree.command(name="weather", description="Get weather information.")
-@app_commands.describe(city="City name")
+@app_commands.describe(city="City name", units="Temperature units (default: Fahrenheit)")
+@app_commands.choices(units=UNIT_CHOICES)
 @rate_limit
-async def weather_command(interaction: discord.Interaction, city: str):
+async def weather_command(interaction: discord.Interaction, city: str, units: Optional[app_commands.Choice[str]] = None):
     city = city.strip()
     if not city:
         embed = create_embed("❌ Invalid Input", "Provide valid city name!", discord.Color.red())
@@ -22,14 +34,15 @@ async def weather_command(interaction: discord.Interaction, city: str):
         return await interaction.response.send_message(embed=embed, ephemeral=True)
 
     await interaction.response.defer()
+    selected = UNITS[units.value if units else "fahrenheit"]
 
     try:
         embed = create_embed("🔍 Fetching...", f"Getting weather for **{city}**...", discord.Color.yellow())
         await interaction.edit_original_response(embed=embed)
 
         async with python_weather.Client(unit=python_weather.IMPERIAL) as client:
-            weather = await client.get(city)
-            embed = create_weather_embed(weather, interaction.user)
+            weather = await client.get(city, unit=selected.client)
+            embed = create_weather_embed(weather, interaction.user, selected)
             await interaction.edit_original_response(embed=embed)
 
     except RequestError as e:
@@ -45,11 +58,12 @@ async def weather_command(interaction: discord.Interaction, city: str):
         embed = create_embed("💥 Error", "Something went wrong. Try later.", discord.Color.red())
         await interaction.edit_original_response(embed=embed)
 
-def _temperature_color(temp) -> discord.Color:
-    return discord.Color.red() if temp >= 80 else discord.Color.orange() if temp >= 60 else discord.Color.blue() if temp >= 40 else discord.Color.dark_blue()
+def _temperature_color(temp, units: Units = UNITS["fahrenheit"]) -> discord.Color:
+    temp_f = temp * 9 / 5 + 32 if units.celsius else temp  # One set of thresholds, so both units agree
+    return discord.Color.red() if temp_f >= 80 else discord.Color.orange() if temp_f >= 60 else discord.Color.blue() if temp_f >= 40 else discord.Color.dark_blue()
 
-def _wind_text(weather) -> str:
-    wind_info = f"{weather.wind_speed} mph"
+def _wind_text(weather, units: Units) -> str:
+    wind_info = f"{weather.wind_speed} {units.speed}"
     if weather.wind_direction:
         direction = str(weather.wind_direction)
         if hasattr(weather.wind_direction, "emoji"):
@@ -64,51 +78,47 @@ def _uv_text(ultraviolet) -> str:
         uv_text = f"{uv_index}/10" + (" ⚠️" if uv_index >= 8 else " 🟡" if uv_index >= 6 else "")
     return uv_text
 
-def _forecast_line(i: int, day) -> str:
-    day_name = "Today" if i == 0 else "Tomorrow" if i == 1 else day.date.strftime('%A') if hasattr(day, 'date') else f"Day {i+1}"
-    emoji = getattr(getattr(day, 'kind', None), 'emoji', '🌤️')
+def _midday(day):
+    """The hourly entry nearest noon, or None. DailyForecast has no kind or description of its own."""
+    return min(day.hourly_forecasts, key=lambda hour: abs(hour.time.hour - 12), default=None)
 
-    desc = day.description if hasattr(day, 'description') else str(day.kind) if hasattr(day, 'kind') else ""
+def _forecast_line(i: int, day, units: Units) -> str:
+    day_name = "Today" if i == 0 else "Tomorrow" if i == 1 else day.date.strftime('%A')
+    midday = _midday(day)
+    emoji = getattr(getattr(midday, 'kind', None), 'emoji', '\U0001F324\ufe0f')
+    desc = getattr(midday, 'description', "")
+    temps = f"H: {day.highest_temperature}{units.temp}, L: {day.lowest_temperature}{units.temp}"  # No `or`: 0 is a real temperature
+    return f"{emoji} **{day_name}**: {desc} \u2022 {temps}\n" if desc else f"{emoji} **{day_name}**: {temps}\n"
 
-    temp_high = getattr(day, 'highest', None) or getattr(day, 'high', None) or getattr(day, 'temperature', None)
-    temp_low = getattr(day, 'lowest', None) or getattr(day, 'low', None)
-
-    temp_info = f"H: {temp_high}°F, L: {temp_low}°F" if temp_high and temp_low else f"{temp_high}°F" if temp_high else ""
-
-    line = f"{emoji} **{day_name}**: {desc}"
-    if temp_info:
-        line += f" • {temp_info}"
-    return line + "\n"
-
-def create_weather_embed(weather, user: discord.User) -> discord.Embed:
+def create_weather_embed(weather, user: discord.User, units: Units = UNITS["fahrenheit"]) -> discord.Embed:
     weather_emoji = getattr(weather.kind, 'emoji', '🌤️')
     date_str = weather.datetime.strftime('%A, %B %d, %Y')
 
     title = f"{weather_emoji} Weather in {weather.location}"
-    description = f"**{weather.description}** • **{weather.temperature}°F**\n{date_str}"
+    description = f"**{weather.description}** • **{weather.temperature}{units.temp}**\n{date_str}"
 
-    embed = create_embed(title, description, _temperature_color(weather.temperature))
+    embed = create_embed(title, description, _temperature_color(weather.temperature, units))
 
     if weather.region and weather.country:
         embed.add_field(name="📍 Location", value=f"{weather.region}, {weather.country}", inline=False)
 
-    embed.add_field(name="🌡️ Temperature", value=f"{weather.temperature}°F", inline=True)
-    embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}°F", inline=True)
+    embed.add_field(name="🌡️ Temperature", value=f"{weather.temperature}{units.temp}", inline=True)
+    embed.add_field(name="🤚 Feels Like", value=f"{weather.feels_like}{units.temp}", inline=True)
     embed.add_field(name="💧 Humidity", value=f"{weather.humidity}%", inline=True)
 
-    embed.add_field(name="💨 Wind", value=_wind_text(weather), inline=True)
+    embed.add_field(name="💨 Wind", value=_wind_text(weather, units), inline=True)
 
-    embed.add_field(name="🌧️ Precipitation", value=f"{weather.precipitation} in", inline=True)
-    embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} inHg", inline=True)
+    embed.add_field(name="🌧️ Precipitation", value=f"{weather.precipitation} {units.rain}", inline=True)
+    embed.add_field(name="🔽 Pressure", value=f"{weather.pressure} {units.pressure}", inline=True)
 
     if weather.visibility:
-        embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} mi", inline=True)
+        embed.add_field(name="👁️ Visibility", value=f"{weather.visibility} {units.distance}", inline=True)
 
     if weather.ultraviolet:
         embed.add_field(name="☀️ UV Index", value=_uv_text(weather.ultraviolet), inline=True)
 
     if weather.daily_forecasts:
-        forecast_text = "".join(_forecast_line(i, day) for i, day in enumerate(weather.daily_forecasts[:4]))
+        forecast_text = "".join(_forecast_line(i, day, units) for i, day in enumerate(weather.daily_forecasts[:4]))
         if forecast_text:
             embed.add_field(name="📅 Forecast", value=forecast_text, inline=False)
 

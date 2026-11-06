@@ -1,4 +1,4 @@
-"""Destiny 2 weekly raid and dungeon post, /weekly and /item. Only lifecycle.py imports this, and only when BUNGIE_API_KEY is set."""
+"""Destiny 2 weekly raid and dungeon post, /weekly, /item, /raid and /dungeon. Only lifecycle.py imports this, and only when BUNGIE_API_KEY is set."""
 import datetime
 import json
 import os
@@ -17,7 +17,7 @@ from .bot import bot
 from .config import Config
 from .log import logger
 from .state import bot_state
-from .utils import create_embed, rate_limit, safe_api_request
+from .utils import RequesterView, create_embed, rate_limit, safe_api_request
 
 DATA_DIR = Path(__file__).with_name("data")
 WEEKLY_MARKER = "Destiny 2 weekly reset"  # Footer start: how the duplicate check finds the bot's own post
@@ -25,6 +25,10 @@ REQUIRED_PERMISSIONS = ("view_channel", "send_messages", "embed_links", "read_me
 INTRINSIC_CATEGORY = 3956125808
 DAMAGE_TYPES = {1: "Kinetic", 2: "Arc", 3: "Solar", 4: "Void", 6: "Stasis", 7: "Strand"}
 ROTATION_GAP = 4  # The two weekly slots sit this many places apart on the rotation list
+ARMOR_LABELS = ("Hunter ", "Titan ", "Warlock ")
+RAID_ANCHOR_RESET = "2026-11-03T17:00:00Z"  # raids.json has no anchor; this pair matches 22 weeks of history up to this reset
+RAID_ANCHOR_PAIR = ("Vault of Glass", "Crota's End")
+ITEM_TYPE_CHOICES = [app_commands.Choice(name="Weapon", value="weapon"), app_commands.Choice(name="Armor", value="armor")]
 MAX_CHOICES = 25
 MAX_CHOICE_LENGTH = 100
 UNCONFIRMED_MODIFIERS = "**Modifiers:** Shown once Bungie confirms this dungeon"
@@ -57,6 +61,18 @@ def load_raids() -> dict:
 def load_items() -> List[ItemEntry]:
     rows = json.loads((DATA_DIR / "items.json").read_text(encoding="utf-8"))
     return [ItemEntry(normalise(name), name, label, hashes) for name, label, hashes in rows]
+
+@lru_cache(maxsize=1)
+def raids_by_name() -> dict:
+    """data["raids"] is keyed by milestone hash; dungeons are already keyed by name."""
+    return {raid["name"]: raid for raid in load_raids()["raids"].values()}
+
+@lru_cache(maxsize=3)
+def items_of_type(item_type: Optional[str]) -> List[ItemEntry]:
+    """Derived from the label, so no regenerated data. None means everything."""
+    if item_type is None:
+        return load_items()
+    return [e for e in load_items() if e.label.startswith(ARMOR_LABELS) == (item_type == "armor")]
 
 @lru_cache(maxsize=1)
 def items_by_hash() -> dict:
@@ -181,6 +197,7 @@ def weekly_spec(featured: List[dict], start: datetime.datetime, forecast: Option
         "description": f"Featured activities from <t:{int(start.timestamp())}:F>. Next reset <t:{int(next_reset.timestamp())}:R>.",
         "fields": [(clip(name, 256), clip(value, 1024)) for name, value in fields],
         "footer": clip(footer, 2048),
+        "raids": [f["raid"]["name"] for f in featured],
     }
 
 def weekly_from_milestones(milestones: dict, footer: str, reset: Optional[datetime.datetime] = None) -> Optional[dict]:
@@ -290,6 +307,66 @@ def add_dungeons(spec: dict, section: Optional[dict]) -> dict:
                "fields": spec["fields"] + [(clip(n, 256), clip(v, 1024)) for n, v in fields]}
     return fit_embed(updated, len(spec["fields"]))
 
+def raid_pair(reset: datetime.datetime, data: dict, offset: int = 0) -> List[str]:
+    """Predicted pair by whole weeks from the anchor: each slot moves one place a week, like forecast_next."""
+    rotation = data["rotation"]
+    weeks = (reset - parse_time(RAID_ANCHOR_RESET)) // datetime.timedelta(days=7) + offset
+    return [rotation[(rotation.index(name) + weeks) % len(rotation)] for name in RAID_ANCHOR_PAIR]
+
+def rotation_text(name: str, pairs: List[List[str]], reset: datetime.datetime) -> str:
+    """pairs[n] is the predicted pair n weeks after reset. latest_reset works in UTC."""
+    week = next((n for n, pair in enumerate(pairs) if name in pair), None)
+    if week is None:
+        when = "Not on the predicted rotation"
+    elif week == 0:
+        when = "Featured this week"
+    elif week == 1:
+        when = "Featured next week"
+    else:
+        when = f"Featured in {week} weeks, from <t:{int((reset + datetime.timedelta(days=7 * week)).timestamp())}:D>"
+    return f"{when} (predicted). {PREDICTED_NOTE}"
+
+def activity_spec(name: str, weapons: str, armor: dict, pairs: List[List[str]], reset: datetime.datetime) -> dict:
+    fields = _activity_fields("Rotation (predicted)", rotation_text(name, pairs, reset), weapons, armor)
+    next_reset = reset + datetime.timedelta(days=7)
+    return {"title": clip(name, 256), "description": f"Next reset <t:{int(next_reset.timestamp())}:R>.",
+            "fields": [(clip(n, 256), clip(v, 1024)) for n, v in fields], "footer": ""}
+
+def raid_spec(name: str, now: datetime.datetime) -> dict:
+    data, reset = load_raids(), latest_reset(now)
+    raid = raids_by_name()[name]
+    pairs = [raid_pair(reset, data, week) for week in range(len(data["rotation"]))]
+    return activity_spec(name, _weapon_text(raid["weapons"]), raid["armor_set"], pairs, reset)
+
+def dungeon_spec(name: str, now: datetime.datetime) -> dict:
+    data, reset = load_raids(), latest_reset(now)
+    dungeon = data["dungeons"][name]
+    pairs = [cycle_pair(reset, data, week) for week in range(len(data["dungeon_cycle"]))]
+    return activity_spec(name, _dungeon_weapon_text(dungeon["weapons"]), dungeon["armor_set"], pairs, reset)
+
+def activity_choices(current: str, names: List[str]) -> List[app_commands.Choice[str]]:
+    needle = normalise(current)
+    hits = [n for n in names if needle in normalise(n)]
+    return [app_commands.Choice(name=clip(n, MAX_CHOICE_LENGTH), value=n) for n in hits[:MAX_CHOICES]]
+
+def resolve_activity(text: str, names: List[str]) -> Optional[str]:
+    needle = normalise(text)
+    matches = [n for n in names if needle in normalise(n)] if needle else []
+    return next((n for n in matches if normalise(n) == needle), matches[0] if matches else None)
+
+def next_week_spec(now: datetime.datetime, live_raids: Optional[List[str]]) -> dict:
+    data, reset = load_raids(), latest_reset(now)
+    next_reset = reset + datetime.timedelta(days=7)
+    names = (forecast_next(live_raids, data["rotation"]) if live_raids else None) or raid_pair(reset, data, 1)
+    fields = []
+    for name in names:
+        raid = raids_by_name()[name]
+        fields.extend(_activity_fields(f"{name} (predicted)", "**Modifiers:** Shown once Bungie confirms this raid", _weapon_text(raid["weapons"]), raid["armor_set"]))
+    spec = {"title": "Destiny 2 Next Week (predicted)", "description": f"Predicted activities from <t:{int(next_reset.timestamp())}:F>. {PREDICTED_NOTE}",
+            "fields": [(clip(n, 256), clip(v, 1024)) for n, v in fields], "footer": "Preview of next week"}  # Must not start with WEEKLY_MARKER
+    section = {"status": "predicted", "names": cycle_pair(reset, data, 1), "entries": {}, "forecast": None}
+    return add_dungeons(spec, section)
+
 # ---- Pure logic: items ----
 
 def normalise(text: str) -> str:
@@ -377,16 +454,19 @@ def error_embed(text: str) -> discord.Embed:
     return create_embed("\u274c Error", text, discord.Color.red())
 
 async def _item_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-    """Local only, so it needs no rate limit and can always answer inside Discord's 3 seconds."""
-    return [app_commands.Choice(name=choice_name(e), value=str(e.hashes[0])) for e in search_items(current, load_items())]
+    """Local only, so it needs no rate limit and can always answer inside Discord's 3 seconds. interaction.namespace.type is None until a type is picked."""
+    return [app_commands.Choice(name=choice_name(e), value=str(e.hashes[0]))
+            for e in search_items(current, items_of_type(interaction.namespace.type))]
 
 @app_commands.command(name="item", description="Look up a Destiny 2 weapon or armor piece.")
-@app_commands.describe(name="Item name")
+@app_commands.describe(name="Item name", item_type="Only search weapons or only armor")
+@app_commands.rename(item_type="type")
+@app_commands.choices(item_type=ITEM_TYPE_CHOICES)
 @app_commands.autocomplete(name=_item_autocomplete)
 @rate_limit
-async def item_command(interaction: discord.Interaction, name: str):
+async def item_command(interaction: discord.Interaction, name: str, item_type: Optional[app_commands.Choice[str]] = None):
     await interaction.response.defer()
-    entry = resolve_item(name, load_items(), items_by_hash())
+    entry = resolve_item(name, items_of_type(item_type.value if item_type else None), items_by_hash())
     if entry is None:
         return await interaction.followup.send(embed=error_embed("No weapon or armor matches that name."))
     item = await bungie_get(f"/Destiny2/Manifest/DestinyInventoryItemDefinition/{entry.hashes[0]}/")
@@ -395,6 +475,22 @@ async def item_command(interaction: discord.Interaction, name: str):
     perk_hash = intrinsic_hash(item) if item.get("itemType") == 3 else None
     perk = await bungie_get(f"/Destiny2/Manifest/DestinyInventoryItemDefinition/{perk_hash}/") if perk_hash else None
     await interaction.followup.send(embed=build_embed(item_spec(item, perk, len(entry.hashes) - 1, entry.hashes[0])))
+
+class NextWeekView(RequesterView):
+    def __init__(self, interaction: discord.Interaction, live_raids: Optional[List[str]]):
+        super().__init__(interaction)
+        self.live_raids = live_raids
+
+    @discord.ui.button(label="Next week", style=discord.ButtonStyle.secondary)
+    async def next_week(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            embed = build_embed(next_week_spec(datetime.datetime.now(timezone.utc), self.live_raids))
+        except Exception as e:  # Old or mismatched data must not fail silently on a private preview
+            logger.error(f"Next week preview failed: {e}", exc_info=True)
+            return await interaction.response.send_message(embed=error_embed("Couldn't build next week's preview."), ephemeral=True)
+        self.stop()
+        button.disabled = True
+        await interaction.response.edit_message(embed=embed, view=self)
 
 @app_commands.command(name="weekly", description="Preview this week's Destiny 2 raid and dungeon post (only you see it).")
 @rate_limit
@@ -408,7 +504,32 @@ async def weekly_command(interaction: discord.Interaction):
         settled = now - reset >= datetime.timedelta(minutes=Config.WEEKLY_DUNGEON_WAIT_MINUTES)
         spec = add_dungeons(spec, await get_dungeons(reset, settled))
     embed = build_embed(spec) if spec else error_embed("Couldn't get this week's raids. Try again later.")
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    kwargs = {"view": NextWeekView(interaction, spec.get("raids"))} if spec else {}
+    await interaction.followup.send(embed=embed, ephemeral=True, **kwargs)
+
+async def _send_activity(interaction, name, names, build, missing):
+    match = resolve_activity(name, names)
+    if match is None:
+        return await interaction.response.send_message(embed=error_embed(missing), ephemeral=True)
+    await interaction.response.send_message(embed=build_embed(build(match, datetime.datetime.now(timezone.utc))))
+
+async def _raid_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    return activity_choices(current, list(raids_by_name()))
+
+async def _dungeon_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    return activity_choices(current, list(load_raids()["dungeons"]))
+
+@app_commands.command(name="raid", description="Show a Destiny 2 raid's drops, armor set and predicted rotation.")
+@app_commands.describe(name="Raid name")
+@app_commands.autocomplete(name=_raid_autocomplete)
+async def raid_command(interaction: discord.Interaction, name: str):
+    await _send_activity(interaction, name, list(raids_by_name()), raid_spec, "No raid matches that name.")
+
+@app_commands.command(name="dungeon", description="Show a Destiny 2 dungeon's drops, armor set and predicted rotation.")
+@app_commands.describe(name="Dungeon name")
+@app_commands.autocomplete(name=_dungeon_autocomplete)
+async def dungeon_command(interaction: discord.Interaction, name: str):
+    await _send_activity(interaction, name, list(load_raids()["dungeons"]), dungeon_spec, "No dungeon matches that name.")
 
 def log_once(reset: datetime.datetime, reason: str, message: str) -> None:
     """Log each reason once per reset, so a 10-minute loop can't spam."""
@@ -524,6 +645,8 @@ def setup() -> None:
     if bot.tree.get_command("item") is None:
         bot.tree.add_command(item_command)
         bot.tree.add_command(weekly_command)
+        bot.tree.add_command(raid_command)
+        bot.tree.add_command(dungeon_command)
     if profile_path() is None:
         logger.info("Live dungeon data disabled: DESTINY_MEMBERSHIP_TYPE or DESTINY_MEMBERSHIP_ID is unset, dungeons will be predicted")
     if channel_id() is None:

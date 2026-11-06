@@ -2,7 +2,7 @@ import asyncio
 import html
 import random
 import time
-from typing import List, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -12,7 +12,7 @@ from .bot import bot
 from .config import Config
 from .log import logger
 from .state import bot_state
-from .utils import create_embed, rate_limit, safe_api_request
+from .utils import RequesterView, create_embed, rate_limit, safe_api_request
 
 # Clip lengths that keep every embed inside Discord's limits even at 10 questions
 QUESTION_LIMIT = 1000
@@ -53,6 +53,15 @@ DIFFICULTY_CHOICES = [
     app_commands.Choice(name="Medium", value="medium"),
     app_commands.Choice(name="Hard", value="hard"),
 ]
+
+class RoundSettings(NamedTuple):
+    amount: int
+    category_id: Optional[int]
+    difficulty: Optional[str]
+    category_name: str
+    difficulty_name: str
+
+ALREADY_RUNNING = "You already have a trivia round running! Finish it first."
 
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1] + "…"
@@ -223,7 +232,7 @@ async def _edit_round(interaction: discord.Interaction, **kwargs) -> bool:
         logger.warning(f"Trivia round ended, could not edit its message: {e}")
         return False
 
-async def play_round(interaction: discord.Interaction, questions: List[dict], category_name: str, difficulty_name: str):
+async def play_round(interaction: discord.Interaction, questions: List[dict], settings: RoundSettings):
     user = interaction.user
     total = len(questions)
     results = []
@@ -250,7 +259,38 @@ async def play_round(interaction: discord.Interaction, questions: List[dict], ca
         if timeouts_in_a_row >= Config.TRIVIA_MAX_TIMEOUTS:
             break
 
-    await _edit_round(interaction, embed=_summary_embed(results, total, category_name, difficulty_name, user), view=None)
+    await _edit_round(interaction, embed=_summary_embed(results, total, settings.category_name, settings.difficulty_name, user), view=PlayAgainView(interaction, settings))
+
+async def run_round(interaction: discord.Interaction, settings: RoundSettings):
+    data = await fetch_round(settings.amount, settings.category_id, settings.difficulty)
+
+    if _response_code(data) != 0 or not data.get("results"):
+        embed = create_embed("\U0001F605 No Questions", _failure_text(data, settings.amount), discord.Color.orange())
+        await _edit_round(interaction, embed=embed, view=None)
+        return
+
+    await play_round(interaction, data["results"], settings)
+
+class PlayAgainView(RequesterView):
+    def __init__(self, interaction: discord.Interaction, settings: RoundSettings):
+        super().__init__(interaction)
+        self.settings = settings
+
+    @discord.ui.button(label="Play Again", style=discord.ButtonStyle.success)
+    async def play_again(self, interaction: discord.Interaction, button: Button):
+        user_id = interaction.user.id
+        if user_id in bot_state.active_trivia:
+            return await interaction.response.send_message(ALREADY_RUNNING, ephemeral=True)
+        if bot_state.is_rate_limited(user_id):  # @rate_limit only wraps commands
+            embed = create_embed("Rate Limited", "You're making requests too quickly. Please wait.", discord.Color.red())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+        bot_state.active_trivia.add(user_id)
+        try:
+            await interaction.response.defer(thinking=True)  # A new message: the results stay readable, and it becomes this interaction's original
+            await self.close()
+            await run_round(interaction, self.settings)
+        finally:
+            bot_state.active_trivia.discard(user_id)
 
 @bot.tree.command(name="trivia", description="Play trivia game.")
 @app_commands.describe(category="Question category (default: any)", difficulty="Question difficulty (default: any)", questions="Number of questions (default: 5)")
@@ -264,7 +304,7 @@ async def trivia_command(
 ):
     user_id = interaction.user.id
     if user_id in bot_state.active_trivia:
-        return await interaction.response.send_message("You already have a trivia round running! Finish it first.", ephemeral=True)
+        return await interaction.response.send_message(ALREADY_RUNNING, ephemeral=True)
 
     bot_state.active_trivia.add(user_id)
     try:
@@ -272,18 +312,12 @@ async def trivia_command(
 
         category_id = category.value if category else None
         difficulty_value = difficulty.value if difficulty else None
-        data = await fetch_round(questions, category_id, difficulty_value)
-
-        if _response_code(data) != 0 or not data.get("results"):
-            embed = create_embed("😅 No Questions", _failure_text(data, questions), discord.Color.orange())
-            await _edit_round(interaction, embed=embed, view=None)
-            return
-
-        await play_round(
-            interaction,
-            data["results"],
+        await run_round(interaction, RoundSettings(
+            questions,
+            category_id,
+            difficulty_value,
             category.name if category else "Any Category",
             difficulty.name if difficulty else "Any Difficulty",
-        )
+        ))
     finally:
         bot_state.active_trivia.discard(user_id)
